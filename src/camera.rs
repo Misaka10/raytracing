@@ -12,6 +12,7 @@ use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
 use rayon::prelude::*;
+use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct Camera {
@@ -122,7 +123,7 @@ impl Camera {
         Ray::new(ray_origin, ray_direction, ray_time)
     }
 
-    pub fn render(&self, world: &Hittable, lights: &Hittable, output_path: &str) -> anyhow::Result<()> {
+    pub fn render(&self, world: &Hittable, lights: &Hittable, output_path: &str, seed: Option<u64>, json_progress: bool) -> anyhow::Result<()> {
         let lights_list = match lights {
             Hittable::HittableList(l) => l,
             _ => anyhow::bail!("lights must be HittableList"),
@@ -132,23 +133,45 @@ impl Camera {
         let h = self.image_height as usize;
         let total_pixels = w * h;
 
-        println!("Rendering {}x{} with {} spp, {} bounces...", w, h, self.samples_per_pixel, self.max_depth);
+        if json_progress {
+            let msg = json!({
+                "type": "start",
+                "width": w,
+                "height": h,
+                "samples": self.samples_per_pixel,
+                "max_depth": self.max_depth,
+            });
+            println!("{}", serde_json::to_string(&msg).unwrap());
+        } else {
+            println!("Rendering {}x{} with {} spp, {} bounces...", w, h, self.samples_per_pixel, self.max_depth);
+        }
 
-        let pb = ProgressBar::new(total_pixels as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} pixels ({percent}%) [{eta}]")
-                .unwrap()
-                .progress_chars("##-"),
-        );
+        let pb = if json_progress {
+            None
+        } else {
+            let bar = ProgressBar::new(total_pixels as u64);
+            bar.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} pixels ({percent}%) [{eta}]")
+                    .unwrap()
+                    .progress_chars("##-"),
+            );
+            Some(bar)
+        };
 
         let counter = AtomicUsize::new(0);
+
+        // Golden ratio constant for deriving per-row seeds
+        const GOLDEN_RATIO_U64: u64 = 0x9e3779b97f4a7c15;
 
         let pixel_data: Vec<[u16; 3]> = (0..h)
             .into_par_iter()
             .flat_map(|j| {
                 let mut row_data: Vec<[u16; 3]> = Vec::with_capacity(w);
-                let mut rng = SmallRng::from_entropy();
+                let mut rng = match seed {
+                    Some(s) => SmallRng::seed_from_u64(s.wrapping_add(GOLDEN_RATIO_U64.wrapping_mul(j as u64))),
+                    None => SmallRng::from_entropy(),
+                };
 
                 for i in 0..w {
                     let mut pixel_color = Vec3::zero();
@@ -162,16 +185,36 @@ impl Camera {
                     row_data.push(rgb);
                 }
 
-                counter.fetch_add(w, Ordering::Relaxed);
-                pb.set_position(counter.load(Ordering::Relaxed) as u64);
+                let done = counter.fetch_add(w, Ordering::Relaxed) + w;
+                if json_progress {
+                    let msg = json!({
+                        "type": "progress",
+                        "completed": done,
+                        "total": total_pixels,
+                    });
+                    println!("{}", serde_json::to_string(&msg).unwrap());
+                } else if let Some(ref bar) = pb {
+                    bar.set_position(done as u64);
+                }
                 row_data
             })
             .collect();
 
-        pb.finish_with_message("Done.");
+        if let Some(ref bar) = pb {
+            bar.finish_with_message("Done.");
+        }
 
         save_png(output_path, w as u32, h as u32, &pixel_data)?;
-        println!("Wrote {}", output_path);
+
+        if json_progress {
+            let msg = json!({
+                "type": "done",
+                "output": output_path,
+            });
+            println!("{}", serde_json::to_string(&msg).unwrap());
+        } else {
+            println!("Wrote {}", output_path);
+        }
         Ok(())
     }
 }
@@ -239,6 +282,46 @@ fn save_png(path: &str, width: u32, height: u32, data: &[[u16; 3]]) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bvh::BvhNode;
+    use crate::material::Material;
+    use crate::sphere::Sphere;
+    use crate::vec3::Color;
+    use std::fs;
+
+    fn make_minimal_camera() -> Camera {
+        let mut cam = Camera::new();
+        cam.image_width = 10;
+        cam.image_height = 6;
+        cam.samples_per_pixel = 4;
+        cam.max_depth = 5;
+        cam.background = Vec3::zero();
+        cam.vfov = 40.0;
+        cam.lookfrom = Point3::new(278.0, 278.0, -800.0);
+        cam.lookat = Point3::new(278.0, 278.0, 0.0);
+        cam.vup = Vec3::new(0.0, 1.0, 0.0);
+        cam.defocus_angle = 0.0;
+        cam.initialize();
+        cam
+    }
+
+    fn make_test_scene() -> (Hittable, Hittable) {
+        let mat = Material::lambertian_color(Color::new(0.5, 0.5, 0.5));
+        let light_mat = Material::diffuse_light_color(Color::new(4.0, 4.0, 4.0));
+        let sphere = Hittable::Sphere(Sphere::stationary(
+            Point3::new(278.0, 278.0, 0.0), 100.0, mat,
+        ));
+        let light_sphere = Hittable::Sphere(Sphere::stationary(
+            Point3::new(278.0, 400.0, 0.0), 100.0, light_mat.clone(),
+        ));
+
+        let mut objects = vec![sphere, light_sphere.clone()];
+        let bvh = BvhNode::from_objects(&mut objects);
+        let world = Hittable::BvhNode(bvh);
+
+        let mut lights = HittableList::new();
+        lights.add(light_sphere);
+        (world, Hittable::HittableList(lights))
+    }
 
     #[test]
     fn test_height_derived_from_aspect_ratio() {
@@ -278,5 +361,64 @@ mod tests {
         cam.initialize();
         assert_eq!(cam.image_width, 3840);
         assert_eq!(cam.image_height, 2160);
+    }
+
+    #[test]
+    fn test_render_with_seed_no_panic() {
+        let cam = make_minimal_camera();
+        let (world, lights) = make_test_scene();
+        let out = std::env::temp_dir().join("rt_test_nopanic.png");
+        let out_path = out.to_str().unwrap();
+
+        let result = cam.render(&world, &lights, out_path, Some(42), false);
+        assert!(result.is_ok());
+        assert!(out.exists());
+        let _ = fs::remove_file(&out);
+    }
+
+    #[test]
+    fn test_seed_determinism() {
+        let cam = make_minimal_camera();
+        let (world, lights) = make_test_scene();
+        let out_a = std::env::temp_dir().join("rt_test_seed_a.png");
+        let out_b = std::env::temp_dir().join("rt_test_seed_b.png");
+        let pa = out_a.to_str().unwrap();
+        let pb = out_b.to_str().unwrap();
+
+        cam.render(&world, &lights, pa, Some(42), false).unwrap();
+        cam.render(&world, &lights, pb, Some(42), false).unwrap();
+
+        let bytes_a = fs::read(&out_a).unwrap();
+        let bytes_b = fs::read(&out_b).unwrap();
+        assert_eq!(bytes_a, bytes_b, "same seed must produce byte-identical PNG");
+
+        let _ = fs::remove_file(&out_a);
+        let _ = fs::remove_file(&out_b);
+    }
+
+    #[test]
+    fn test_json_progress_enabled_does_not_panic() {
+        let cam = make_minimal_camera();
+        let (world, lights) = make_test_scene();
+        let out = std::env::temp_dir().join("rt_test_json.png");
+        let out_path = out.to_str().unwrap();
+
+        let result = cam.render(&world, &lights, out_path, Some(42), true);
+        assert!(result.is_ok());
+        assert!(out.exists());
+        let _ = fs::remove_file(&out);
+    }
+
+    #[test]
+    fn test_no_seed_produces_output() {
+        let cam = make_minimal_camera();
+        let (world, lights) = make_test_scene();
+        let out = std::env::temp_dir().join("rt_test_noseed.png");
+        let out_path = out.to_str().unwrap();
+
+        let result = cam.render(&world, &lights, out_path, None, false);
+        assert!(result.is_ok());
+        assert!(out.exists());
+        let _ = fs::remove_file(&out);
     }
 }
