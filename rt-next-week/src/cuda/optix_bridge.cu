@@ -133,6 +133,7 @@ struct OptiXBridge {
     CUdeviceptr                  d_denoisedOutput;
     bool                         denoiserSetup;
 
+    char                         deviceName[256];
     char                         errorMsg[512];
 };
 
@@ -262,10 +263,9 @@ OptiXBridge* optix_bridge_init(
     CUdevice cuDevice;
     CUDA_CHECK(cuDeviceGet(&cuDevice, 0));
 
-    // Print device name for diagnostics
-    char deviceName[256];
-    CUDA_CHECK_FREE(cuDeviceGetName(deviceName, sizeof(deviceName), cuDevice));
-    fprintf(stderr, "[OptiXBridge] Using CUDA device: %s\n", deviceName);
+    // Store and print device name for diagnostics
+    CUDA_CHECK_FREE(cuDeviceGetName(bridge->deviceName, sizeof(bridge->deviceName), cuDevice));
+    fprintf(stderr, "[OptiXBridge] Using CUDA device: %s\n", bridge->deviceName);
 
     CUDA_CHECK(cuCtxCreate(&bridge->cuCtx, NULL, CU_CTX_SCHED_SPIN, cuDevice));
     CUDA_CHECK(cuStreamCreate(&bridge->stream, CU_STREAM_DEFAULT));
@@ -790,6 +790,11 @@ bool optix_bridge_denoise(OptiXBridge* bridge) {
 
     fprintf(stderr, "[OptiXBridge] Denoised %dx%d image (Tensor Core HDR)\n", width, height);
     return true;
+}
+
+const char* optix_bridge_get_device_name(const OptiXBridge* bridge) {
+    if (!bridge) return "";
+    return bridge->deviceName;
 }
 
 const char* optix_bridge_get_error(const OptiXBridge* bridge) {

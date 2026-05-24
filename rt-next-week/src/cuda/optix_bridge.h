@@ -105,6 +105,9 @@ bool optix_bridge_render(
    Must be called after render. Returns true on success. */
 bool optix_bridge_denoise(OptiXBridge* bridge);
 
+/* Get the CUDA device name detected during init. Returns "" if not initialized. */
+const char* optix_bridge_get_device_name(const OptiXBridge* bridge);
+
 /* Get last error message. */
 const char* optix_bridge_get_error(const OptiXBridge* bridge);
 

@@ -67,47 +67,76 @@ ipcMain.handle('read-gpu-calibration', async () => {
 });
 
 // Check if GPU binary is available
+// Check GPU availability using --check-gpu diagnostic flag (lightweight JSON probe)
 ipcMain.handle('check-gpu', async () => {
     const binaryPath = getRustBinaryPath();
     if (!fs.existsSync(binaryPath)) {
-        return { available: false, error: 'Binary not found' };
+        return { available: false, error: 'Binary not found', device_name: null };
     }
 
-    // Quick test: try rendering a 10x10 image with --gpu
-    const testOutput = path.join(app.getPath('temp'), 'rt_gpu_check.png');
     return new Promise((resolve) => {
-        const child = spawn(binaryPath, [
-            '--width', '10',
-            '--height', '10',
-            '--samples', '1',
-            '--max-depth', '2',
-            '--output', testOutput,
-            '--seed', '0',
-            '--gpu',
-        ], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 });
-
-        let stderr = '';
-
-        child.stderr.on('data', (data) => {
-            stderr += data.toString();
+        const child = spawn(binaryPath, ['--check-gpu'], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 15000,
         });
 
+        let stdout = '';
+        let stderr = '';
+
+        child.stdout.on('data', (data) => { stdout += data.toString(); });
+        child.stderr.on('data', (data) => { stderr += data.toString(); });
+
         child.on('error', () => {
-            resolve({ available: false, error: 'Failed to spawn GPU binary' });
+            resolve({ available: false, error: 'Failed to spawn binary for GPU check', device_name: null });
         });
 
         child.on('close', (code) => {
-            try { fs.unlinkSync(testOutput); } catch (_) {}
             if (code === 0) {
-                resolve({ available: true });
+                try {
+                    const result = JSON.parse(stdout.trim());
+                    const deviceName = result.cuda?.device_name || result.optix?.device_name || null;
+                    const available = result.status === 'ok';
+                    const optixAvailable = result.optix?.available || false;
+
+                    resolve({
+                        available,
+                        device_name: deviceName,
+                        optix_available: optixAvailable,
+                        error: result.status === 'ok' ? null
+                            : (result.optix?.error || result.cuda?.error || 'Unknown GPU error'),
+                        diagnostic: result,
+                    });
+                } catch (parseErr) {
+                    resolve({
+                        available: false,
+                        error: 'Failed to parse GPU diagnostic JSON output',
+                        device_name: null,
+                        stderr_tail: stderr.slice(-500),
+                        stdout_tail: stdout.slice(-500),
+                    });
+                }
             } else {
-                // GPU feature not compiled or no CUDA GPU
-                const msg = stderr.includes('cuda') || stderr.includes('CUDA')
-                    ? 'No CUDA GPU detected or driver not installed'
-                    : stderr.includes('GPU support')
-                        ? 'Binary built without CUDA feature'
-                        : 'GPU render failed (exit ' + code + ')';
-                resolve({ available: false, error: msg });
+                const stderrLower = stderr.toLowerCase();
+                if (stderrLower.includes('cuda feature') || stderrLower.includes('built without')) {
+                    resolve({
+                        available: false,
+                        error: 'Binary built without CUDA feature. Rebuild with --features cuda.',
+                        device_name: null,
+                    });
+                } else if (code === null) {
+                    resolve({
+                        available: false,
+                        error: 'GPU check timed out (15s)',
+                        device_name: null,
+                    });
+                } else {
+                    resolve({
+                        available: false,
+                        error: 'GPU check failed (exit ' + code + ')',
+                        device_name: null,
+                        stderr_tail: stderr.slice(-500),
+                    });
+                }
             }
         });
     });

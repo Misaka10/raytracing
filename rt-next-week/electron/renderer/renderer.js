@@ -319,13 +319,18 @@ async function checkGpu() {
     const result = await window.electronAPI.checkGpu();
     if (result && result.available) {
         gpuAvailable = true;
-        gpuStatus.textContent = 'OptiX RT Core GPU detected';
+        const deviceName = result.device_name || 'NVIDIA GPU';
+        const label = result.optix_available
+            ? `GPU: ${deviceName} (RT Core)`
+            : `GPU: ${deviceName} (CUDA only, no OptiX)`;
+        gpuStatus.textContent = label;
         gpuStatus.className = 'hint gpu-ok';
         gpuLabel.style.opacity = '1';
     } else {
         gpuAvailable = false;
         gpuRadio.disabled = true;
-        gpuStatus.textContent = result ? (result.error || 'GPU not available') : 'GPU not available';
+        const errMsg = (result && result.error) ? result.error : 'GPU not available';
+        gpuStatus.textContent = errMsg;
         gpuStatus.className = 'hint gpu-error';
         gpuLabel.style.opacity = '0.5';
         gpuLabel.title = 'GPU unavailable — build with --features cuda or install CUDA driver';
