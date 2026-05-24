@@ -103,3 +103,41 @@ fn perlin_interp(c: &[[[Vec3; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
     }
     accum
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
+    #[test]
+    fn test_noise_range() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let perlin = Perlin::new(&mut rng);
+        for i in 0..10 {
+            for j in 0..10 {
+                for k in 0..10 {
+                    let v = perlin.noise(&Vec3::new(i as f64 * 0.1, j as f64 * 0.1, k as f64 * 0.1));
+                    assert!(v >= -1.0 && v <= 1.0, "noise value {} out of range", v);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_turb_range() {
+        let mut rng = SmallRng::seed_from_u64(99);
+        let perlin = Perlin::new(&mut rng);
+        let t = perlin.turb(&Vec3::new(0.5, 0.5, 0.5), 7);
+        assert!(t >= 0.0, "turb should be non-negative, got {}", t);
+    }
+
+    #[test]
+    fn test_deterministic() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let perlin = Perlin::new(&mut rng);
+        let a = perlin.noise(&Vec3::new(0.5, 0.5, 0.5));
+        let b = perlin.noise(&Vec3::new(0.5, 0.5, 0.5));
+        assert_eq!(a, b);
+    }
+}

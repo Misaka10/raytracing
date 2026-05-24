@@ -1,5 +1,6 @@
 use crate::color_io;
 use crate::hittable::HitRecord;
+use crate::hittable_list::HittableList;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::pdf::Pdf;
@@ -7,7 +8,9 @@ use crate::ray::Ray;
 use crate::vec3::{self, Point3, Vec3};
 use crate::Hittable;
 use indicatif::{ProgressBar, ProgressStyle};
+use rand::rngs::SmallRng;
 use rand::Rng;
+use rand::SeedableRng;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -118,6 +121,11 @@ impl Camera {
     }
 
     pub fn render(&self, world: &Hittable, lights: &Hittable, output_path: &str) -> anyhow::Result<()> {
+        let lights_list = match lights {
+            Hittable::HittableList(l) => l,
+            _ => anyhow::bail!("lights must be HittableList"),
+        };
+
         let w = self.image_width as usize;
         let h = self.image_height as usize;
         let total_pixels = w * h;
@@ -138,14 +146,14 @@ impl Camera {
             .into_par_iter()
             .flat_map(|j| {
                 let mut row_data: Vec<[u16; 3]> = Vec::with_capacity(w);
-                let mut rng = rand::thread_rng();
+                let mut rng = SmallRng::from_entropy();
 
                 for i in 0..w {
                     let mut pixel_color = Vec3::zero();
                     for s_j in 0..self.sqrt_spp {
                         for s_i in 0..self.sqrt_spp {
                             let r = self.get_ray(i as u32, j as u32, s_i, s_j, &mut rng);
-                            pixel_color += ray_color(&r, self.max_depth, world, lights, &mut rng);
+                            pixel_color += ray_color(&r, self.max_depth, world, lights_list, &mut rng);
                         }
                     }
                     let rgb = color_io::pixel_to_10bit(&(self.pixel_samples_scale * pixel_color));
@@ -167,7 +175,7 @@ impl Camera {
 }
 
 fn ray_color<R: Rng>(
-    r: &Ray, depth: u32, world: &Hittable, lights: &Hittable, rng: &mut R,
+    r: &Ray, depth: u32, world: &Hittable, lights: &HittableList, rng: &mut R,
 ) -> Vec3 {
     if depth == 0 { return Vec3::zero(); }
 
@@ -177,7 +185,7 @@ fn ray_color<R: Rng>(
     };
 
     if !world.hit(r, &Interval::new(0.001, f64::INFINITY), &mut rec) {
-        return Vec3::zero(); // background
+        return Vec3::zero();
     }
 
     let color_from_emission = rec.mat.emitted(r, &rec, rec.u, rec.v, &rec.p);
@@ -191,20 +199,17 @@ fn ray_color<R: Rng>(
         return srec.attenuation * ray_color(&srec.skip_pdf_ray, depth - 1, world, lights, rng);
     }
 
-    let light_pdf = Pdf::hittable(
-        match lights {
-            Hittable::HittableList(l) => l,
-            _ => panic!("lights must be HittableList"),
-        },
-        &rec.p,
-    );
-
     let bsdf_pdf = srec.pdf_ptr.unwrap_or_else(|| Pdf::sphere());
-    let mixture = Pdf::mixture(light_pdf, bsdf_pdf);
 
-    let scattered_dir = mixture.generate(rng);
+    // 内联混合 PDF：直接使用 lights 引用，避免克隆
+    let scattered_dir = if rng.gen::<f64>() < 0.5 {
+        lights.random(&rec.p, rng)
+    } else {
+        bsdf_pdf.generate(rng)
+    };
     let scattered = Ray::new(rec.p, scattered_dir, r.tm);
-    let pdf_val = mixture.value(&scattered.dir);
+    let pdf_val = 0.5 * lights.pdf_value(&rec.p, &scattered.dir)
+        + 0.5 * bsdf_pdf.value(&scattered.dir);
     let scattering_pdf = rec.mat.scattering_pdf(r, &rec, &scattered);
 
     let sample_color = ray_color(&scattered, depth - 1, world, lights, rng);

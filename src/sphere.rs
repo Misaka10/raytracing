@@ -90,3 +90,48 @@ fn random_to_sphere<R: Rng>(radius: f64, distance_squared: f64, rng: &mut R) -> 
     let y = phi.sin() * (1.0 - z * z).sqrt();
     Vec3::new(x, y, z)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::material::Material;
+
+    #[test]
+    fn test_sphere_hit_center() {
+        let s = Sphere::stationary(Point3::new(0.0, 0.0, 0.0), 1.0, Material::lambertian_color(Vec3::zero()));
+        let r = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let mut rec = HitRecord {
+            p: Point3::zero(), normal: Vec3::zero(), mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+        };
+        assert!(s.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
+        assert!((rec.t - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_sphere_miss() {
+        let s = Sphere::stationary(Point3::new(0.0, 0.0, 0.0), 1.0, Material::lambertian_color(Vec3::zero()));
+        let r = Ray::new(Point3::new(0.0, 2.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let mut rec = HitRecord {
+            p: Point3::zero(), normal: Vec3::zero(), mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+        };
+        assert!(!s.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
+    }
+
+    #[test]
+    fn test_sphere_bbox() {
+        let s = Sphere::stationary(Point3::new(2.0, 2.0, 2.0), 3.0, Material::lambertian_color(Vec3::zero()));
+        assert!(s.bbox.x.min <= -1.0 + 1e-4);
+        assert!(s.bbox.x.max >= 5.0 - 1e-4);
+    }
+
+    #[test]
+    fn test_pdf_value() {
+        let s = Sphere::stationary(Point3::new(0.0, 0.0, 0.0), 1.0, Material::lambertian_color(Vec3::zero()));
+        let origin = Point3::new(0.0, 0.0, -5.0);
+        let dir = Vec3::new(0.0, 0.0, 1.0);
+        let pdf = s.pdf_value(&origin, &dir);
+        assert!(pdf > 0.0, "pdf should be > 0 for a ray that hits");
+    }
+}

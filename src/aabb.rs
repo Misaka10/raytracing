@@ -96,3 +96,47 @@ impl std::ops::Add<Aabb> for Vec3 {
     type Output = Aabb;
     fn add(self, bbox: Aabb) -> Aabb { bbox + self }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_from_points() {
+        let a = Point3::new(0.0, 0.0, 0.0);
+        let b = Point3::new(1.0, 2.0, 3.0);
+        let bb = Aabb::from_points(&a, &b);
+        assert!(bb.x.min <= 0.0 && bb.x.max >= 1.0);
+        assert!(bb.y.min <= 0.0 && bb.y.max >= 2.0);
+        assert!(bb.z.min <= 0.0 && bb.z.max >= 3.0);
+    }
+
+    #[test]
+    fn test_hit_ray() {
+        let bb = Aabb::from_points(&Point3::new(0.0, 0.0, 0.0), &Point3::new(2.0, 2.0, 2.0));
+        let r = Ray::new(Point3::new(1.0, 1.0, -1.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
+        assert!(bb.hit(&r, Interval::new(0.001, f64::INFINITY)));
+    }
+
+    #[test]
+    fn test_hit_miss() {
+        let bb = Aabb::from_points(&Point3::new(0.0, 0.0, 0.0), &Point3::new(2.0, 2.0, 2.0));
+        let r = Ray::new(Point3::new(1.0, 1.0, -1.0), Vec3::new(1.0, 0.0, 0.0), 0.0);
+        assert!(!bb.hit(&r, Interval::new(0.001, f64::INFINITY)));
+    }
+
+    #[test]
+    fn test_from_boxes() {
+        let b1 = Aabb::from_points(&Point3::new(0.0, 0.0, 0.0), &Point3::new(1.0, 1.0, 1.0));
+        let b2 = Aabb::from_points(&Point3::new(2.0, 2.0, 2.0), &Point3::new(3.0, 3.0, 3.0));
+        let merged = Aabb::from_boxes(&b1, &b2);
+        assert!(merged.x.min <= 0.0 && merged.x.max >= 3.0);
+    }
+
+    #[test]
+    fn test_add_offset() {
+        let bb = Aabb::from_points(&Point3::new(0.0, 0.0, 0.0), &Point3::new(2.0, 2.0, 2.0));
+        let shifted = bb + Vec3::new(1.0, 2.0, 3.0);
+        assert!(shifted.x.min >= 1.0);
+    }
+}
