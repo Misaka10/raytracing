@@ -5,6 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 ## Build
 
 ```sh
+# One-click: CPU build + Electron package
+.\build.bat
+
+# One-click: CPU + GPU build + Electron package
+.\build.bat --gpu
+
 # CPU-only (fast)
 cargo build --release
 
@@ -69,6 +75,7 @@ src/
 ├── camera.rs         — CPU render loop (rayon parallel) + GPU render entry point
 ├── vec3.rs           — Vec3 (x,y,z), Point3, Color aliases; SIMD f64 layout
 ├── ray.rs            — Ray { origin, direction }
+├── rng.rs            — Seedable RNG wrapper (deterministic rendering)
 ├── interval.rs       — [min, max] interval math
 ├── aabb.rs           — Axis-aligned bounding box
 ├── bvh.rs            — BvhNode (leaf/split recursive tree)
@@ -139,7 +146,7 @@ src/
 
 ## Testing
 
-88 unit tests across all modules. Key tests:
+88 unit tests across all modules (88 with `--features cuda`). Key tests:
 - `cuda::scene::tests::test_box_with_transform_not_empty` — Regressed: HittableList silently dropped in tessellation
 - `cuda::scene::tests::test_sphere_vertex_normals_*` — Normals are unit length, correct direction
 - `cuda::scene::tests::test_gpu_material_size` — 36 bytes (matches GPU GpuMaterialData)

@@ -50,6 +50,12 @@ Key features:
 ## Quick Start
 
 ```sh
+# One-click: CPU build + Electron package
+.\build.bat
+
+# One-click: CPU + GPU build + Electron package
+.\build.bat --gpu
+
 # CPU render (default: 4K, 400 spp, 75 bounces)
 cargo build --release
 ./target/release/rt-next-week.exe --output scene.png
@@ -557,6 +563,12 @@ RT Renderer 是一个基于物理的路径追踪器，实现了《Ray Tracing: T
 ## 快速开始
 
 ```sh
+# 一键构建：CPU 编译 + Electron 打包
+.\build.bat
+
+# 一键构建：CPU + GPU 编译 + Electron 打包
+.\build.bat --gpu
+
 # CPU 渲染（默认：4K 分辨率，400 spp，75 次反弹）
 cargo build --release
 ./target/release/rt-next-week.exe --output scene.png
