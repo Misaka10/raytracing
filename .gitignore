@@ -9,6 +9,10 @@ electron/dist-pkg/
 /optix-sdk-*.zip
 electron-builder-binaries-nsis-*.zip
 
+# Claude Code (local only)
+CLAUDE.md
+.claude/
+
 # Build artifacts
 RT Renderer*.zip
 RT Renderer*/
