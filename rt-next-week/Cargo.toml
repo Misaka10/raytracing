@@ -1,0 +1,17 @@
+[package]
+name = "rt-next-week"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = { version = "0.8", features = ["small_rng"] }
+rand_distr = "0.4"
+rayon = "1.10"
+image = { version = "0.25", default-features = false, features = ["png"] }
+indicatif = { version = "0.17", features = ["rayon"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
