@@ -209,6 +209,7 @@ fn ray_color<R: Rng>(
     } else {
         bsdf_pdf.generate(rng)
     };
+    let scattered_dir = scattered_dir.unit_vector(); // 提前归一化，省去下游重复 sqrt
     let scattered = Ray::new(rec.p, scattered_dir, r.tm);
     let pdf_val = 0.5 * lights.pdf_value(&rec.p, &scattered.dir)
         + 0.5 * bsdf_pdf.value(&scattered.dir);

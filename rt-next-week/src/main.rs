@@ -101,7 +101,10 @@ fn main() -> anyhow::Result<()> {
     cam.defocus_angle = 0.0;
     cam.initialize();
 
-    let world_hittable = Hittable::HittableList(world);
+    // 使用 BVH 加速几何体命中测试（O(log n) 替代 O(n)）
+    let mut objects = world.objects;
+    let bvh = rt_next_week::bvh::BvhNode::from_objects(&mut objects);
+    let world_hittable = Hittable::BvhNode(bvh);
     let lights_hittable = Hittable::HittableList(lights);
 
     cam.render(&world_hittable, &lights_hittable, &args.output)?;

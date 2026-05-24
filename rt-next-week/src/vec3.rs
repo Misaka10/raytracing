@@ -3,7 +3,7 @@ use std::ops;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Vec3 {
-    pub e: [f64; 3],
+    pub e: [f64; 4],
 }
 
 pub type Point3 = Vec3;
@@ -11,7 +11,7 @@ pub type Color = Vec3;
 
 impl Vec3 {
     pub const fn new(x: f64, y: f64, z: f64) -> Self {
-        Self { e: [x, y, z] }
+        Self { e: [x, y, z, 0.0] }
     }
     pub const fn zero() -> Self { Self::new(0.0, 0.0, 0.0) }
 
@@ -174,7 +174,7 @@ mod tests {
         let a = Vec3::new(1.0, 2.0, 3.0);
         let b = Vec3::new(4.0, 5.0, 6.0);
         let c = a + b;
-        assert_eq!(c.e, [5.0, 7.0, 9.0]);
+        assert_eq!(c.e, [5.0, 7.0, 9.0, 0.0]);
     }
 
     #[test]
@@ -182,21 +182,21 @@ mod tests {
         let a = Vec3::new(5.0, 7.0, 9.0);
         let b = Vec3::new(1.0, 2.0, 3.0);
         let c = a - b;
-        assert_eq!(c.e, [4.0, 5.0, 6.0]);
+        assert_eq!(c.e, [4.0, 5.0, 6.0, 0.0]);
     }
 
     #[test]
     fn test_mul_f64() {
         let a = Vec3::new(1.0, 2.0, 3.0);
         let b = a * 2.0;
-        assert_eq!(b.e, [2.0, 4.0, 6.0]);
+        assert_eq!(b.e, [2.0, 4.0, 6.0, 0.0]);
     }
 
     #[test]
     fn test_div_f64() {
         let a = Vec3::new(2.0, 4.0, 6.0);
         let b = a / 2.0;
-        assert_eq!(b.e, [1.0, 2.0, 3.0]);
+        assert_eq!(b.e, [1.0, 2.0, 3.0, 0.0]);
     }
 
     #[test]
@@ -212,7 +212,7 @@ mod tests {
         let x = Vec3::new(1.0, 0.0, 0.0);
         let y = Vec3::new(0.0, 1.0, 0.0);
         let z = x.cross(&y);
-        assert_eq!(z.e, [0.0, 0.0, 1.0]);
+        assert_eq!(z.e, [0.0, 0.0, 1.0, 0.0]);
     }
 
     #[test]
@@ -256,14 +256,14 @@ mod tests {
     fn test_neg() {
         let v = Vec3::new(1.0, -2.0, 3.0);
         let n = -v;
-        assert_eq!(n.e, [-1.0, 2.0, -3.0]);
+        assert_eq!(n.e, [-1.0, 2.0, -3.0, 0.0]);
     }
 
     #[test]
     fn test_add_assign() {
         let mut v = Vec3::new(1.0, 2.0, 3.0);
         v += Vec3::new(4.0, 5.0, 6.0);
-        assert_eq!(v.e, [5.0, 7.0, 9.0]);
+        assert_eq!(v.e, [5.0, 7.0, 9.0, 0.0]);
     }
 
     #[test]

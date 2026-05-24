@@ -25,13 +25,13 @@ mod tests {
     fn test_at() {
         let r = Ray::new(Point3::new(1.0, 2.0, 3.0), Vec3::new(1.0, 0.0, 0.0), 0.0);
         let p = r.at(5.0);
-        assert_eq!(p.e, [6.0, 2.0, 3.0]);
+        assert_eq!(p.e, [6.0, 2.0, 3.0, 0.0]);
     }
 
     #[test]
     fn test_at_zero() {
         let r = Ray::new(Point3::new(1.0, 2.0, 3.0), Vec3::new(1.0, 2.0, 3.0), 0.5);
         let p = r.at(0.0);
-        assert_eq!(p.e, [1.0, 2.0, 3.0]);
+        assert_eq!(p.e, [1.0, 2.0, 3.0, 0.0]);
     }
 }
