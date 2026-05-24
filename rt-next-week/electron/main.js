@@ -93,15 +93,31 @@ ipcMain.handle('check-gpu', async () => {
         child.on('close', (code) => {
             if (code === 0) {
                 try {
-                    const result = JSON.parse(stdout.trim());
+                    // Extract the last JSON line from stdout (OptiX debug logs may precede it)
+                    const lines = stdout.trim().split('\n');
+                    let jsonLine = '';
+                    for (let i = lines.length - 1; i >= 0; i--) {
+                        const trimmed = lines[i].trim();
+                        if (trimmed.startsWith('{')) {
+                            jsonLine = trimmed;
+                            break;
+                        }
+                    }
+                    const result = JSON.parse(jsonLine || stdout.trim());
                     const deviceName = result.cuda?.device_name || result.optix?.device_name || null;
                     const available = result.status === 'ok';
                     const optixAvailable = result.optix?.available || false;
+                    // Collect any warnings from the diagnostic
+                    const warnings = result.cuda?.warnings || [];
 
                     resolve({
                         available,
                         device_name: deviceName,
                         optix_available: optixAvailable,
+                        compute_capability: result.cuda?.compute_capability || null,
+                        driver_version: result.cuda?.driver_version || null,
+                        vram_mb: result.cuda?.vram_mb || null,
+                        warnings,
                         error: result.status === 'ok' ? null
                             : (result.optix?.error || result.cuda?.error || 'Unknown GPU error'),
                         diagnostic: result,

@@ -163,6 +163,7 @@ input[type="range"]::-webkit-slider-thumb {
     border-top: 1px solid var(--border);
 }
 .gpu-ok { color: #0f9b58; }
+.gpu-warn { color: #d4a017; }
 .gpu-error { color: var(--warning-yellow); }
 
 /* Estimate Panel */
