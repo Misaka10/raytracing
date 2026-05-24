@@ -279,14 +279,21 @@ unsafe impl Send for OptiXBridge {}
 // GPU Diagnostics (for --check-gpu)
 // ============================================================================
 
+// CUDA device attribute enum values (from cuda.h)
+const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR: i32 = 75;
+const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR: i32 = 76;
+
 /// Probe CUDA driver directly (fast, no OptiX dependency).
 /// Uses raw CUDA Driver API — symbols provided by cuda.lib (linked by build.rs).
 fn cuda_driver_probe() -> serde_json::Value {
     extern "C" {
         fn cuInit(flags: u32) -> i32;
+        fn cuDriverGetVersion(version: *mut i32) -> i32;
         fn cuDeviceGetCount(count: *mut i32) -> i32;
         fn cuDeviceGet(device: *mut i32, ordinal: i32) -> i32;
         fn cuDeviceGetName(name: *mut std::ffi::c_char, len: i32, dev: i32) -> i32;
+        fn cuDeviceGetAttribute(pi: *mut i32, attrib: i32, dev: i32) -> i32;
+        fn cuDeviceTotalMem_v2(bytes: *mut u64, dev: i32) -> i32;
     }
 
     unsafe {
@@ -294,15 +301,27 @@ fn cuda_driver_probe() -> serde_json::Value {
             return serde_json::json!({
                 "available": false,
                 "device_name": null,
+                "driver_version": null,
+                "compute_capability": null,
+                "vram_mb": null,
                 "error": "cuInit failed: CUDA driver not installed or too old"
             });
         }
+
+        // Driver version (e.g. 12000 = R560.x)
+        let mut driver_ver: i32 = 0;
+        cuDriverGetVersion(&mut driver_ver);
+        let driver_major = driver_ver / 1000;
+        let driver_minor = (driver_ver % 1000) / 10;
 
         let mut count: i32 = 0;
         if cuDeviceGetCount(&mut count) != 0 {
             return serde_json::json!({
                 "available": false,
                 "device_name": null,
+                "driver_version": format!("{}.{}", driver_major, driver_minor),
+                "compute_capability": null,
+                "vram_mb": null,
                 "error": "cuDeviceGetCount failed"
             });
         }
@@ -310,6 +329,9 @@ fn cuda_driver_probe() -> serde_json::Value {
             return serde_json::json!({
                 "available": false,
                 "device_name": null,
+                "driver_version": format!("{}.{}", driver_major, driver_minor),
+                "compute_capability": null,
+                "vram_mb": null,
                 "error": "No CUDA-capable devices found (count=0)"
             });
         }
@@ -319,6 +341,9 @@ fn cuda_driver_probe() -> serde_json::Value {
             return serde_json::json!({
                 "available": false,
                 "device_name": null,
+                "driver_version": format!("{}.{}", driver_major, driver_minor),
+                "compute_capability": null,
+                "vram_mb": null,
                 "error": "cuDeviceGet failed"
             });
         }
@@ -328,6 +353,9 @@ fn cuda_driver_probe() -> serde_json::Value {
             return serde_json::json!({
                 "available": true,
                 "device_name": null,
+                "driver_version": format!("{}.{}", driver_major, driver_minor),
+                "compute_capability": null,
+                "vram_mb": null,
                 "error": "cuDeviceGetName failed"
             });
         }
@@ -336,9 +364,49 @@ fn cuda_driver_probe() -> serde_json::Value {
             .to_string_lossy()
             .into_owned();
 
+        // Compute capability
+        let mut cc_major: i32 = 0;
+        let mut cc_minor: i32 = 0;
+        let cc = if cuDeviceGetAttribute(&mut cc_major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device) == 0
+            && cuDeviceGetAttribute(&mut cc_minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device) == 0 {
+            Some(format!("{}.{}", cc_major, cc_minor))
+        } else {
+            None
+        };
+
+        // VRAM (via cuDeviceTotalMem_v2 — returns bytes as u64)
+        let mut total_mem: u64 = 0;
+        let vram_mb = if cuDeviceTotalMem_v2(&mut total_mem, device) == 0 {
+            Some(total_mem / (1024 * 1024))
+        } else {
+            None
+        };
+
+        // Check minimum requirements
+        let mut warnings: Vec<&str> = Vec::new();
+        if driver_ver < 12000 {
+            warnings.push("Driver too old: NVIDIA R560+ required for OptiX 9.x support. Please update your driver.");
+        }
+        if let Some(ref cc_str) = cc {
+            let parts: Vec<&str> = cc_str.split('.').collect();
+            if let (Some(major_str), Some(minor_str)) = (parts.first(), parts.get(1)) {
+                if let (Ok(major), Ok(minor)) = (major_str.parse::<i32>(), minor_str.parse::<i32>()) {
+                    let cc_num = major * 10 + minor;
+                    if cc_num < 75 {
+                        warnings.push("GPU compute capability below 7.5 (Turing). This build targets sm_75 — older GPUs may not run all shaders correctly.");
+                    }
+                }
+            }
+        }
+
         serde_json::json!({
             "available": true,
             "device_name": name,
+            "driver_version": format!("{}.{}", driver_major, driver_minor),
+            "compute_capability": cc,
+            "vram_mb": vram_mb,
+            "device_count": count,
+            "warnings": if warnings.is_empty() { None } else { Some(warnings.iter().map(|s| s.to_string()).collect::<Vec<_>>()) },
             "error": null
         })
     }

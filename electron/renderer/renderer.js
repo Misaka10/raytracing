@@ -320,12 +320,21 @@ async function checkGpu() {
     if (result && result.available) {
         gpuAvailable = true;
         const deviceName = result.device_name || 'NVIDIA GPU';
+        const cc = result.compute_capability || '?';
+        const driver = result.driver_version || '?';
+        const vramGb = result.vram_mb ? (result.vram_mb / 1024).toFixed(1) : '?';
         const label = result.optix_available
-            ? `GPU: ${deviceName} (RT Core)`
+            ? `GPU: ${deviceName} (CC ${cc}, ${vramGb} GB, driver ${driver}) [RT Core + OptiX]`
             : `GPU: ${deviceName} (CUDA only, no OptiX)`;
         gpuStatus.textContent = label;
         gpuStatus.className = 'hint gpu-ok';
         gpuLabel.style.opacity = '1';
+
+        // Show warnings if any
+        if (result.warnings && result.warnings.length > 0) {
+            gpuStatus.textContent += '\n⚠ ' + result.warnings.join('\n⚠ ');
+            gpuStatus.className = 'hint gpu-warn';
+        }
     } else {
         gpuAvailable = false;
         gpuRadio.disabled = true;
