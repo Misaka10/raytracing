@@ -47,6 +47,7 @@ bool optix_bridge_build_accel(
     OptiXBridge* bridge,
     const float* vertices,
     const unsigned int* indices,
+    const float* normals,
     int tri_count,
     int vertex_count
 );
@@ -87,6 +88,29 @@ bool optix_bridge_set_render_params(
     unsigned int sqrt_spp,
     unsigned int max_depth,
     float pixel_samples_scale
+);
+
+/* Set area light geometry for importance sampling.
+   corner: one corner of the light rectangle (3 floats)
+   u, v:   edge vectors of the light rectangle (3 floats each)
+   area_inv: 1.0 / (|u| * |v|) — reciprocal of light area
+   Must be called before render. */
+bool optix_bridge_set_light(
+    OptiXBridge* bridge,
+    const float* corner,
+    const float* u,
+    const float* v,
+    float area_inv
+);
+
+/* Set sphere geometry for MIS direction sampling.
+   center: sphere center (3 floats)
+   radius: sphere radius
+   Must be called before render. */
+bool optix_bridge_set_sphere(
+    OptiXBridge* bridge,
+    const float* center,
+    float radius
 );
 
 /* Launch the render.
