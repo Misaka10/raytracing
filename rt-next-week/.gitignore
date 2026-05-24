@@ -5,7 +5,7 @@
 *.exe
 electron/node_modules/
 /dist/
-/dist-pkg/
+electron/dist-pkg/
 /optix-sdk-*.zip
 electron-builder-binaries-nsis-*.zip
 
