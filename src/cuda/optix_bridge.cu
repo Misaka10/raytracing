@@ -86,7 +86,9 @@ struct OptiXBridge {
     OptixDeviceContext   optixCtx;
 
     // Pipeline components
-    OptixModule                  module;
+    OptixModule                  moduleRaygen;
+    OptixModule                  moduleClosesthit;
+    OptixModule                  moduleMiss;
     OptixProgramGroup            raygenPG;
     OptixProgramGroup            missPG;
     OptixProgramGroup            hitgroupPG;
@@ -300,42 +302,30 @@ OptiXBridge* optix_bridge_init(
     char log[2048];
     size_t logSize = sizeof(log);
 
-    // Compile single module containing all programs
-    // We combine PTX by including all in one module
-    size_t ptxRaygenLen = strlen(ptx_raygen);
-    size_t ptxChLen = strlen(ptx_closesthit);
-    size_t ptxMsLen = strlen(ptx_miss);
+    // Create 3 separate OptiX modules (one per PTX file) to avoid
+    // duplicate symbol definitions (each PTX is its own compilation unit).
+    auto createModule = [&](const char* ptx, size_t ptxLen, const char* name,
+                             OptixModule* outModule) -> bool {
+        logSize = sizeof(log);
+        OptixResult res = optixModuleCreate(
+            bridge->optixCtx, &moduleCompileOpts, &pipelineCompileOpts,
+            ptx, ptxLen, log, &logSize, outModule);
+        if (res != OPTIX_SUCCESS) {
+            setError(bridge, "optixModuleCreate(%s) failed: %s", name, log);
+            return false;
+        }
+        return true;
+    };
 
-    // Allocate buffer for combined PTX with separators
-    size_t combinedLen = ptxRaygenLen + ptxChLen + ptxMsLen + 3;
-    char* combinedPtx = (char*)malloc(combinedLen + 1);
-    if (!combinedPtx) {
-        setError(bridge, "Failed to allocate PTX buffer");
+    if (!createModule(ptx_raygen, strlen(ptx_raygen), "raygen", &bridge->moduleRaygen)) {
         optix_bridge_destroy(bridge);
         return NULL;
     }
-
-    size_t off = 0;
-    memcpy(combinedPtx + off, ptx_raygen, ptxRaygenLen); off += ptxRaygenLen;
-    combinedPtx[off++] = '\n';
-    memcpy(combinedPtx + off, ptx_closesthit, ptxChLen); off += ptxChLen;
-    combinedPtx[off++] = '\n';
-    memcpy(combinedPtx + off, ptx_miss, ptxMsLen); off += ptxMsLen;
-    combinedPtx[off] = '\0';
-
-    OptixResult modResult = optixModuleCreate(
-        bridge->optixCtx,
-        &moduleCompileOpts,
-        &pipelineCompileOpts,
-        combinedPtx,
-        off,
-        log, &logSize,
-        &bridge->module
-    );
-    free(combinedPtx);
-
-    if (modResult != OPTIX_SUCCESS) {
-        setError(bridge, "optixModuleCreate failed: %s", log);
+    if (!createModule(ptx_closesthit, strlen(ptx_closesthit), "closesthit", &bridge->moduleClosesthit)) {
+        optix_bridge_destroy(bridge);
+        return NULL;
+    }
+    if (!createModule(ptx_miss, strlen(ptx_miss), "miss", &bridge->moduleMiss)) {
         optix_bridge_destroy(bridge);
         return NULL;
     }
@@ -346,7 +336,7 @@ OptiXBridge* optix_bridge_init(
 
         OptixProgramGroupDesc raygenDesc = {};
         raygenDesc.kind = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
-        raygenDesc.raygen.module = bridge->module;
+        raygenDesc.raygen.module = bridge->moduleRaygen;
         raygenDesc.raygen.entryFunctionName = "__raygen__rg";
 
         logSize = sizeof(log);
@@ -357,7 +347,7 @@ OptiXBridge* optix_bridge_init(
 
         OptixProgramGroupDesc missDesc = {};
         missDesc.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
-        missDesc.miss.module = bridge->module;
+        missDesc.miss.module = bridge->moduleMiss;
         missDesc.miss.entryFunctionName = "__miss__ms";
 
         logSize = sizeof(log);
@@ -368,7 +358,7 @@ OptiXBridge* optix_bridge_init(
 
         OptixProgramGroupDesc hitDesc = {};
         hitDesc.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
-        hitDesc.hitgroup.moduleCH = bridge->module;
+        hitDesc.hitgroup.moduleCH = bridge->moduleClosesthit;
         hitDesc.hitgroup.entryFunctionNameCH = "__closesthit__ch";
         hitDesc.hitgroup.moduleAH = NULL;
         hitDesc.hitgroup.entryFunctionNameAH = NULL;
@@ -445,7 +435,9 @@ void optix_bridge_destroy(OptiXBridge* bridge) {
     if (bridge->raygenPG)       optixProgramGroupDestroy(bridge->raygenPG);
     if (bridge->missPG)         optixProgramGroupDestroy(bridge->missPG);
     if (bridge->hitgroupPG)     optixProgramGroupDestroy(bridge->hitgroupPG);
-    if (bridge->module)         optixModuleDestroy(bridge->module);
+    if (bridge->moduleRaygen)    optixModuleDestroy(bridge->moduleRaygen);
+    if (bridge->moduleClosesthit) optixModuleDestroy(bridge->moduleClosesthit);
+    if (bridge->moduleMiss)      optixModuleDestroy(bridge->moduleMiss);
     if (bridge->optixCtx)       optixDeviceContextDestroy(bridge->optixCtx);
 
     if (bridge->stream)         cuStreamDestroy(bridge->stream);

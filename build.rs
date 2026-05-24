@@ -261,6 +261,16 @@ fn main() {
         if !status.success() {
             panic!("NVCC failed compiling {}. Fix shader errors and retry.", shader);
         }
+
+        // CUDA 13.x generates PTX ISA 9.1 which OptiX 9.1 SDK cannot parse.
+        // Patch the .version directive down to 8.5 — the actual instructions
+        // are compute_75-compatible and valid in PTX ISA 8.x.
+        let ptx_content = std::fs::read_to_string(&output)
+            .unwrap_or_else(|e| panic!("Failed to read PTX {}: {}", output.display(), e));
+        let patched = ptx_content.replace(".version 9.1", ".version 8.5");
+        std::fs::write(&output, patched)
+            .unwrap_or_else(|e| panic!("Failed to write patched PTX {}: {}", output.display(), e));
+        eprintln!("[build.rs]   Patched PTX version 9.1 -> 8.5 for OptiX 9.1 compatibility");
     }
 
     // --- Compile optix_bridge.cu to static library ---
