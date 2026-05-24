@@ -191,7 +191,19 @@ fn get_material(h: &Hittable) -> Option<&Material> {
         Hittable::Quad(q) => Some(&q.mat),
         Hittable::Translate(obj, _, _) => get_material(obj),
         Hittable::RotateY(obj, _, _, _) => get_material(obj),
+        Hittable::HittableList(list) => {
+            list.objects.first().and_then(|obj| get_material(obj))
+        }
+        Hittable::BvhNode(bvh) => get_bvh_material(bvh),
         _ => None,
+    }
+}
+
+/// Helper: extract material from a BvhNode by recursing into leftmost leaf
+fn get_bvh_material(bvh: &BvhNode) -> Option<&Material> {
+    match bvh {
+        BvhNode::Leaf { object, .. } => get_material(object),
+        BvhNode::Split { left, .. } => get_bvh_material(left),
     }
 }
 
@@ -501,6 +513,74 @@ mod tests {
             let dist = (dx * dx + dy * dy + dz * dz).sqrt();
             assert!((dist - 2.0).abs() < 0.002, "vertex at distance {} from center, expected 2.0", dist);
         }
+    }
+
+    #[test]
+    fn test_box_material_is_white_not_wall() {
+        // Reproduces bug: box = Translate(RotateY(HittableList(6 white quads)))
+        // get_material used to return None (hitting _ => None), causing mat_indices.push(0)
+        // which assigned the first wall material (red/green) instead of white
+        let white = Material::lambertian_color(Color::new(0.73, 0.73, 0.73));
+        let red = Material::lambertian_color(Color::new(0.65, 0.05, 0.05));
+        let box_geom = crate::quad_box::make_box(
+            &Point3::new(0.0, 0.0, 0.0),
+            &Point3::new(165.0, 330.0, 165.0),
+            white,
+        );
+        let box_rotated = Hittable::rotate_y(box_geom, 15.0);
+        let box_translated = Hittable::translate(box_rotated, Vec3::new(265.0, 0.0, 295.0));
+        // Put a red wall BEFORE the box in the list — if get_material fails,
+        // the box will fall back to index 0 (red) instead of white
+        let red_quad = Hittable::Quad(Quad::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(100.0, 0.0, 0.0),
+            Vec3::new(0.0, 100.0, 0.0),
+            red,
+        ));
+        let world = Hittable::HittableList(crate::hittable_list::HittableList {
+            objects: vec![red_quad, box_translated],
+            bbox: crate::aabb::Aabb::default(),
+        });
+        let scene = GpuScene::from_world(&world);
+        // The red quad has 2 tris, the box has 12 tris
+        assert_eq!(scene.tri_to_material.len(), 14);
+        // Material 0 should be red, material 1+ should be white
+        // The box tris start at index 2
+        let box_mat_idx = scene.tri_to_material[2] as usize;
+        let box_mat = &scene.materials[box_mat_idx];
+        // Box material must be white (0.73, 0.73, 0.73), NOT red (0.65, 0.05, 0.05)
+        assert!((box_mat.albedo[0] - 0.73).abs() < 0.01,
+            "box albedo[0] = {}, expected 0.73 (red wall albedo is 0.65). get_material returned wrong material!", box_mat.albedo[0]);
+        assert!((box_mat.albedo[1] - 0.73).abs() < 0.01,
+            "box albedo[1] = {}, expected 0.73", box_mat.albedo[1]);
+        assert!((box_mat.albedo[2] - 0.73).abs() < 0.01,
+            "box albedo[2] = {}, expected 0.73", box_mat.albedo[2]);
+    }
+
+    #[test]
+    fn test_get_material_penetrates_transform_chain() {
+        let white = Material::lambertian_color(Color::new(0.73, 0.73, 0.73));
+        let quad = Hittable::Quad(Quad::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            white,
+        ));
+        let list = Hittable::HittableList(crate::hittable_list::HittableList {
+            objects: vec![quad],
+            bbox: crate::aabb::Aabb::default(),
+        });
+        let rotated = Hittable::rotate_y(list, 15.0);
+        let translated = Hittable::translate(rotated, Vec3::new(1.0, 2.0, 3.0));
+        let mat = get_material(&translated);
+        assert!(mat.is_some(), "get_material should penetrate Translate→RotateY→HittableList→Quad");
+        let albedo = match mat.unwrap() {
+            Material::Lambertian { tex } => solid_color_albedo(tex),
+            _ => panic!("expected Lambertian material"),
+        };
+        assert!((albedo[0] - 0.73).abs() < 0.01);
+        assert!((albedo[1] - 0.73).abs() < 0.01);
+        assert!((albedo[2] - 0.73).abs() < 0.01);
     }
 
     #[test]
