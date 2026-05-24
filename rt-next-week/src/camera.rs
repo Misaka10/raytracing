@@ -123,6 +123,93 @@ impl Camera {
         Ray::new(ray_origin, ray_direction, ray_time)
     }
 
+    #[cfg(feature = "cuda")]
+    pub fn render_gpu(&self, world: &Hittable, output_path: &str, seed: Option<u64>) -> anyhow::Result<()> {
+        use crate::cuda::optix::{self, BridgeCameraParams, OptiXBridge};
+        use crate::cuda::scene::GpuScene;
+
+        let w = self.image_width as usize;
+        let h = self.image_height as usize;
+        let spp = self.samples_per_pixel;
+        let sqrt_spp = self.sqrt_spp;
+
+        // Build GPU scene from world
+        let gpu_scene = GpuScene::from_world(world);
+        if gpu_scene.vertices.is_empty() || gpu_scene.indices.is_empty() {
+            anyhow::bail!("GPU scene has no geometry");
+        }
+
+        eprintln!("GPU scene: {} triangles, {} vertices, {} materials",
+            gpu_scene.tri_to_material.len(),
+            gpu_scene.vertices.len() / 3,
+            gpu_scene.materials.len());
+
+        // Load PTX shaders
+        let (ptx_raygen, ptx_ch, ptx_ms) = optix::load_ptx_shaders();
+
+        // Init bridge
+        let mut bridge = OptiXBridge::new(ptx_raygen, ptx_ch, ptx_ms)
+            .ok_or_else(|| anyhow::anyhow!("Failed to initialize OptiX bridge"))?;
+
+        // Build acceleration structure
+        let tri_count = gpu_scene.tri_to_material.len() as i32;
+        if !bridge.build_accel(&gpu_scene.vertices, &gpu_scene.indices, tri_count) {
+            anyhow::bail!("Failed to build BVH: {}", bridge.get_error());
+        }
+
+        // Upload materials
+        if !bridge.set_materials(&gpu_scene.materials) {
+            anyhow::bail!("Failed to upload materials: {}", bridge.get_error());
+        }
+
+        // Upload per-triangle material indices
+        if !bridge.set_tri_material(&gpu_scene.tri_to_material) {
+            anyhow::bail!("Failed to upload tri_material: {}", bridge.get_error());
+        }
+
+        // Set render params
+        bridge.set_render_params(sqrt_spp, self.max_depth, self.pixel_samples_scale as f32);
+
+        // Create pipeline
+        if !bridge.create_pipeline(w as i32, h as i32) {
+            anyhow::bail!("Failed to create pipeline: {}", bridge.get_error());
+        }
+
+        // Build camera params
+        let cam = BridgeCameraParams {
+            lookfrom: f64x3_to_f32x3(self.lookfrom),
+            lookat:   f64x3_to_f32x3(self.lookat),
+            vup:      f64x3_to_f32x3(self.vup),
+            vfov: self.vfov as f32,
+            aspect_ratio: self.aspect_ratio as f32,
+            defocus_angle: self.defocus_angle as f32,
+            focus_dist: self.focus_dist as f32,
+            u: f64x3_to_f32x3(self.u),
+            v: f64x3_to_f32x3(self.v),
+            w: f64x3_to_f32x3(self.w),
+            pixel00_loc: f64x3_to_f32x3(self.pixel00_loc),
+            pixel_delta_u: f64x3_to_f32x3(self.pixel_delta_u),
+            pixel_delta_v: f64x3_to_f32x3(self.pixel_delta_v),
+            defocus_disk_u: f64x3_to_f32x3(self.defocus_disk_u),
+            defocus_disk_v: f64x3_to_f32x3(self.defocus_disk_v),
+        };
+
+        let seed = seed.unwrap_or(0);
+        let output_size = w * h * 3;
+        let mut output = vec![0.0f32; output_size];
+
+        eprintln!("Rendering GPU {}x{} with {} spp...", w, h, spp);
+        if !bridge.render(&mut output, &cam, seed as u32) {
+            anyhow::bail!("GPU render failed: {}", bridge.get_error());
+        }
+
+        // Convert float buffer to 16-bit PNG
+        save_png_gpu(output_path, w as u32, h as u32, &output)?;
+
+        eprintln!("Wrote {}", output_path);
+        Ok(())
+    }
+
     pub fn render(&self, world: &Hittable, lights: &Hittable, output_path: &str, seed: Option<u64>, json_progress: bool) -> anyhow::Result<()> {
         let lights_list = match lights {
             Hittable::HittableList(l) => l,
@@ -265,6 +352,29 @@ fn ray_color<R: Rng>(
     let color_from_scatter = srec.attenuation * scattering_pdf * sample_color / pdf_val;
 
     color_from_emission + color_from_scatter
+}
+
+#[cfg(feature = "cuda")]
+fn f64x3_to_f32x3(v: crate::vec3::Vec3) -> [f32; 3] {
+    [v.x() as f32, v.y() as f32, v.z() as f32]
+}
+
+#[cfg(feature = "cuda")]
+fn save_png_gpu(path: &str, width: u32, height: u32, data: &[f32]) -> anyhow::Result<()> {
+    use image::{ImageBuffer, Rgb};
+    let mut buf: ImageBuffer<Rgb<u16>, Vec<u16>> = ImageBuffer::new(width, height);
+    for (idx, chunk) in data.chunks(3).enumerate() {
+        if chunk.len() < 3 { break; }
+        let x = idx as u32 % width;
+        let y = idx as u32 / width;
+        // Convert linear float [0, ~100] to 10-bit scaled 16-bit
+        let r = (chunk[0].max(0.0).min(50.0) / 50.0 * 65535.0).round() as u16;
+        let g = (chunk[1].max(0.0).min(50.0) / 50.0 * 65535.0).round() as u16;
+        let b = (chunk[2].max(0.0).min(50.0) / 50.0 * 65535.0).round() as u16;
+        buf.put_pixel(x, y, Rgb([r, g, b]));
+    }
+    buf.save(path)?;
+    Ok(())
 }
 
 fn save_png(path: &str, width: u32, height: u32, data: &[[u16; 3]]) -> anyhow::Result<()> {
