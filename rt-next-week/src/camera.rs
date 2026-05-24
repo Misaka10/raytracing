@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub struct Camera {
     pub aspect_ratio: f64,
     pub image_width: u32,
+    pub image_height: u32,
     pub samples_per_pixel: u32,
     pub max_depth: u32,
     pub background: Vec3,
@@ -27,7 +28,6 @@ pub struct Camera {
     pub defocus_angle: f64,
     pub focus_dist: f64,
 
-    image_height: u32,
     pixel_samples_scale: f64,
     sqrt_spp: u32,
     recip_sqrt_spp: f64,
@@ -62,7 +62,9 @@ impl Camera {
     pub fn new() -> Self { Self::default() }
 
     pub fn initialize(&mut self) {
-        self.image_height = (self.image_width as f64 / self.aspect_ratio) as u32;
+        if self.image_height == 0 {
+            self.image_height = (self.image_width as f64 / self.aspect_ratio) as u32;
+        }
         if self.image_height < 1 { self.image_height = 1; }
 
         self.sqrt_spp = (self.samples_per_pixel as f64).sqrt() as u32;
@@ -120,7 +122,7 @@ impl Camera {
         Ray::new(ray_origin, ray_direction, ray_time)
     }
 
-    pub fn render(&self, world: &Hittable, lights: &Hittable, output_path: &str) -> anyhow::Result<()> {
+    pub fn render(&self, world: &Hittable, lights: &Hittable, output_path: &str, denoise_config: &crate::denoise::DenoiseConfig) -> anyhow::Result<()> {
         let lights_list = match lights {
             Hittable::HittableList(l) => l,
             _ => anyhow::bail!("lights must be HittableList"),
@@ -142,7 +144,7 @@ impl Camera {
 
         let counter = AtomicUsize::new(0);
 
-        let pixel_data: Vec<[u16; 3]> = (0..h)
+        let mut pixel_data: Vec<[u16; 3]> = (0..h)
             .into_par_iter()
             .flat_map(|j| {
                 let mut row_data: Vec<[u16; 3]> = Vec::with_capacity(w);
@@ -167,6 +169,19 @@ impl Camera {
             .collect();
 
         pb.finish_with_message("Done.");
+
+        if denoise_config.enabled {
+            println!(
+                "Denoising with median filter (radius={})...",
+                denoise_config.radius
+            );
+            crate::denoise::median_filter(
+                &mut pixel_data,
+                w as u32,
+                h as u32,
+                denoise_config.radius,
+            );
+        }
 
         save_png(output_path, w as u32, h as u32, &pixel_data)?;
         println!("Wrote {}", output_path);
@@ -231,4 +246,49 @@ fn save_png(path: &str, width: u32, height: u32, data: &[[u16; 3]]) -> anyhow::R
     }
     buf.save(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_height_derived_from_aspect_ratio() {
+        let mut cam = Camera::new();
+        cam.image_width = 800;
+        cam.image_height = 0;
+        cam.aspect_ratio = 4.0 / 3.0;
+        cam.initialize();
+        assert_eq!(cam.image_height, 600);
+    }
+
+    #[test]
+    fn test_explicit_height_overrides_aspect_ratio() {
+        let mut cam = Camera::new();
+        cam.image_width = 3840;
+        cam.image_height = 2160;
+        cam.aspect_ratio = 1.0;
+        cam.initialize();
+        assert_eq!(cam.image_height, 2160);
+    }
+
+    #[test]
+    fn test_height_clamped_to_minimum() {
+        let mut cam = Camera::new();
+        cam.image_width = 100;
+        cam.image_height = 0;
+        cam.aspect_ratio = 1000.0;
+        cam.initialize();
+        assert!(cam.image_height >= 1);
+    }
+
+    #[test]
+    fn test_4k_resolution() {
+        let mut cam = Camera::new();
+        cam.image_width = 3840;
+        cam.image_height = 2160;
+        cam.initialize();
+        assert_eq!(cam.image_width, 3840);
+        assert_eq!(cam.image_height, 2160);
+    }
 }

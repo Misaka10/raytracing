@@ -14,6 +14,14 @@ struct Args {
     #[arg(long, default_value = "600")]
     width: u32,
 
+    /// 图像高度（0 = 从宽高比自动推导）
+    #[arg(long, default_value = "0")]
+    height: u32,
+
+    /// 宽高比 width/height（仅在未指定 height 时使用）
+    #[arg(long, default_value = "1.0")]
+    aspect_ratio: f64,
+
     #[arg(long, default_value = "100")]
     samples: u32,
 
@@ -22,6 +30,14 @@ struct Args {
 
     #[arg(long, default_value = "output.png")]
     output: String,
+
+    /// 启用中值滤波降噪
+    #[arg(long)]
+    denoise: bool,
+
+    /// 降噪滤波器半径（1=3x3, 2=5x5）
+    #[arg(long, default_value = "1")]
+    denoise_radius: u32,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -81,8 +97,9 @@ fn main() -> anyhow::Result<()> {
     )));
 
     let mut cam = Camera::new();
-    cam.aspect_ratio = 1.0;
+    cam.aspect_ratio = args.aspect_ratio;
     cam.image_width = args.width;
+    cam.image_height = args.height;
     cam.samples_per_pixel = args.samples;
     cam.max_depth = args.max_depth;
     cam.background = Color::zero();
@@ -96,7 +113,13 @@ fn main() -> anyhow::Result<()> {
     let world_hittable = Hittable::HittableList(world);
     let lights_hittable = Hittable::HittableList(lights);
 
-    cam.render(&world_hittable, &lights_hittable, &args.output)?;
+    let denoise_config = if args.denoise {
+        rt_next_week::denoise::DenoiseConfig::median(args.denoise_radius)
+    } else {
+        rt_next_week::denoise::DenoiseConfig::disabled()
+    };
+
+    cam.render(&world_hittable, &lights_hittable, &args.output, &denoise_config)?;
 
     Ok(())
 }
