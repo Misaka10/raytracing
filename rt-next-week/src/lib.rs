@@ -20,3 +20,6 @@ pub mod camera;
 
 pub use hittable::Hittable;
 pub use hittable_list::HittableList;
+
+#[cfg(feature = "cuda")]
+pub mod cuda;

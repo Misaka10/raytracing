@@ -37,6 +37,14 @@ struct Args {
     /// 启用 JSON 进度输出（用于 Electron IPC）
     #[arg(long, default_value_t = false)]
     json: bool,
+
+    /// 使用 GPU (OptiX RT Core) 渲染
+    #[arg(long, default_value_t = false)]
+    gpu: bool,
+
+    /// 启用 AI 降噪 (Tensor Core, 仅 GPU 模式有效)
+    #[arg(long, default_value_t = false)]
+    denoise: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -121,7 +129,14 @@ fn main() -> anyhow::Result<()> {
     let world_hittable = Hittable::BvhNode(bvh);
     let lights_hittable = Hittable::HittableList(lights);
 
-    cam.render(&world_hittable, &lights_hittable, &args.output, args.seed, args.json)?;
+    if args.gpu {
+        #[cfg(feature = "cuda")]
+        cam.render_gpu(&world_hittable, &args.output, args.seed, args.denoise)?;
+        #[cfg(not(feature = "cuda"))]
+        anyhow::bail!("GPU support requires --features cuda. Rebuild with: cargo build --release --features cuda");
+    } else {
+        cam.render(&world_hittable, &lights_hittable, &args.output, args.seed, args.json)?;
+    }
 
     Ok(())
 }
