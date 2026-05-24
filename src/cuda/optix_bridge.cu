@@ -48,10 +48,23 @@ struct GpuLaunchParams {
     GpuMaterial*            materials;
     unsigned int            material_count;
     GpuFloat3*              vertex_buffer;
+    GpuFloat3*              normal_buffer;
     unsigned int*           index_buffer;
     unsigned int*           tri_material;
     OptixTraversableHandle  traversable;
+    // Light sampling
+    GpuFloat3               light_corner;
+    GpuFloat3               light_u;
+    GpuFloat3               light_v;
+    float                   light_area_inv;
+    // Sphere for MIS
+    GpuFloat3               sphere_center;
+    float                   sphere_radius;
 };
+
+// Verify host-side struct sizes match GPU-side (common.h) expectations
+static_assert(sizeof(GpuMaterial) == 36, "GpuMaterial must be 36 bytes");
+static_assert(sizeof(GpuCameraParams) == 148, "GpuCameraParams must be 148 bytes");
 
 // ============================================================================
 // SBT record structures
@@ -106,6 +119,7 @@ struct OptiXBridge {
     OptixTraversableHandle       gasHandle;
     CUdeviceptr                  d_gasBuffer;
     CUdeviceptr                  d_vertexBuffer;
+    CUdeviceptr                  d_normalBuffer;
     CUdeviceptr                  d_indexBuffer;
     bool                         hasAccel;
 
@@ -125,6 +139,15 @@ struct OptiXBridge {
     unsigned int                 sqrtSpp;
     unsigned int                 maxDepth;
     float                        pixelScale;
+
+    // Light params
+    GpuFloat3                    lightCorner;
+    GpuFloat3                    lightU;
+    GpuFloat3                    lightV;
+    float                        lightAreaInv;
+    // Sphere for MIS
+    GpuFloat3                    sphereCenter;
+    float                        sphereRadius;
 
     // Denoiser
     OptixDenoiser                denoiser;
@@ -240,6 +263,7 @@ OptiXBridge* optix_bridge_init(
     bridge->materialCount = 0;
     bridge->d_triMaterial = 0;
     bridge->d_vertexBuffer = 0;
+    bridge->d_normalBuffer = 0;
     bridge->d_indexBuffer = 0;
     bridge->d_gasBuffer = 0;
     bridge->d_sbtRaygen = 0;
@@ -430,6 +454,7 @@ void optix_bridge_destroy(OptiXBridge* bridge) {
     if (bridge->d_triMaterial) cuMemFree(bridge->d_triMaterial);
     if (bridge->d_materials)   cuMemFree(bridge->d_materials);
     if (bridge->d_vertexBuffer) cuMemFree(bridge->d_vertexBuffer);
+    if (bridge->d_normalBuffer) cuMemFree(bridge->d_normalBuffer);
     if (bridge->d_indexBuffer)  cuMemFree(bridge->d_indexBuffer);
     if (bridge->d_gasBuffer)    cuMemFree(bridge->d_gasBuffer);
     if (bridge->d_sbtRaygen)    cuMemFree(bridge->d_sbtRaygen);
@@ -455,6 +480,7 @@ bool optix_bridge_build_accel(
     OptiXBridge* bridge,
     const float* vertices,
     const unsigned int* indices,
+    const float* normals,
     int tri_count,
     int vertex_count)
 {
@@ -462,11 +488,20 @@ bool optix_bridge_build_accel(
 
     const size_t vertexSize = (size_t)vertex_count * 3 * sizeof(float);
     const size_t indexSize  = (size_t)tri_count * 3 * sizeof(unsigned int);
+    const size_t normalSize = (size_t)vertex_count * 3 * sizeof(float);
 
-    // Upload vertex and index data
+    // Free old buffers on rebuild
+    if (bridge->d_vertexBuffer) { CUDA_CHECK_FREE(cuMemFree(bridge->d_vertexBuffer)); bridge->d_vertexBuffer = 0; }
+    if (bridge->d_normalBuffer) { CUDA_CHECK_FREE(cuMemFree(bridge->d_normalBuffer)); bridge->d_normalBuffer = 0; }
+    if (bridge->d_indexBuffer)  { CUDA_CHECK_FREE(cuMemFree(bridge->d_indexBuffer));  bridge->d_indexBuffer = 0; }
+    if (bridge->d_gasBuffer)    { CUDA_CHECK_FREE(cuMemFree(bridge->d_gasBuffer));    bridge->d_gasBuffer = 0; }
+
+    // Upload vertex, normal, and index data
     CUDA_CHECK(cuMemAlloc(&bridge->d_vertexBuffer, vertexSize));
+    CUDA_CHECK(cuMemAlloc(&bridge->d_normalBuffer, normalSize));
     CUDA_CHECK(cuMemAlloc(&bridge->d_indexBuffer, indexSize));
     CUDA_CHECK(cuMemcpyHtoD(bridge->d_vertexBuffer, vertices, vertexSize));
+    CUDA_CHECK(cuMemcpyHtoD(bridge->d_normalBuffer, normals, normalSize));
     CUDA_CHECK(cuMemcpyHtoD(bridge->d_indexBuffer, indices, indexSize));
 
     // Build acceleration structure (RT Core hardware BVH)
@@ -604,9 +639,16 @@ bool optix_bridge_render(
     params.materials = (GpuMaterial*)bridge->d_materials;
     params.material_count = bridge->materialCount;
     params.vertex_buffer = (GpuFloat3*)bridge->d_vertexBuffer;
+    params.normal_buffer = (GpuFloat3*)bridge->d_normalBuffer;
     params.index_buffer = (unsigned int*)bridge->d_indexBuffer;
     params.tri_material = (unsigned int*)bridge->d_triMaterial;
     params.traversable = bridge->gasHandle;
+    params.light_corner = bridge->lightCorner;
+    params.light_u = bridge->lightU;
+    params.light_v = bridge->lightV;
+    params.light_area_inv = bridge->lightAreaInv;
+    params.sphere_center = bridge->sphereCenter;
+    params.sphere_radius = bridge->sphereRadius;
     fillGpuCamera(camera, &params.camera);
 
     CUDA_CHECK(cuMemcpyHtoD(bridge->d_launchParams, &params, sizeof(GpuLaunchParams)));
@@ -681,6 +723,36 @@ bool optix_bridge_set_render_params(OptiXBridge* bridge, unsigned int sqrt_spp, 
     bridge->sqrtSpp = sqrt_spp;
     bridge->maxDepth = max_depth;
     bridge->pixelScale = pixel_samples_scale;
+    return true;
+}
+
+bool optix_bridge_set_light(
+    OptiXBridge* bridge,
+    const float* corner,
+    const float* u,
+    const float* v,
+    float area_inv)
+{
+    if (!bridge) return false;
+    bridge->lightCorner = { corner[0], corner[1], corner[2] };
+    bridge->lightU      = { u[0], u[1], u[2] };
+    bridge->lightV      = { v[0], v[1], v[2] };
+    bridge->lightAreaInv = area_inv;
+    fprintf(stderr, "[OptiXBridge] Light set: corner=(%.1f,%.1f,%.1f) u=(%.1f,%.1f,%.1f) v=(%.1f,%.1f,%.1f) area_inv=%.6f\n",
+            corner[0], corner[1], corner[2], u[0], u[1], u[2], v[0], v[1], v[2], area_inv);
+    return true;
+}
+
+bool optix_bridge_set_sphere(
+    OptiXBridge* bridge,
+    const float* center,
+    float radius)
+{
+    if (!bridge) return false;
+    bridge->sphereCenter = { center[0], center[1], center[2] };
+    bridge->sphereRadius = radius;
+    fprintf(stderr, "[OptiXBridge] Sphere set: center=(%.1f,%.1f,%.1f) radius=%.1f\n",
+            center[0], center[1], center[2], radius);
     return true;
 }
 

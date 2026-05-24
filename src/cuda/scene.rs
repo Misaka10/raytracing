@@ -27,6 +27,7 @@ pub struct GpuMaterial {
 
 pub struct GpuScene {
     pub vertices: Vec<f32>,
+    pub normals: Vec<f32>,
     pub indices: Vec<u32>,
     pub tri_to_material: Vec<u32>,
     pub materials: Vec<GpuMaterial>,
@@ -36,6 +37,7 @@ impl GpuScene {
     pub fn from_world(world: &Hittable) -> Self {
         let mut scene = GpuScene {
             vertices: Vec::new(),
+            normals: Vec::new(),
             indices: Vec::new(),
             tri_to_material: Vec::new(),
             materials: Vec::new(),
@@ -111,6 +113,11 @@ impl GpuScene {
                 self.vertices.push(cx + r * sin_theta * cos_phi);
                 self.vertices.push(cy + r * cos_theta);
                 self.vertices.push(cz + r * sin_theta * sin_phi);
+
+                // Analytic normal: (vertex - center) / radius = unit-sphere normal
+                self.normals.push(sin_theta * cos_phi);
+                self.normals.push(cos_theta);
+                self.normals.push(sin_theta * sin_phi);
             }
         }
 
@@ -141,10 +148,26 @@ impl GpuScene {
         let u = quad.u;
         let v = quad.v;
 
+        // Face normal = normalize(u × v)
+        let (ux, uy, uz) = (u.x() as f32, u.y() as f32, u.z() as f32);
+        let (vx, vy, vz) = (v.x() as f32, v.y() as f32, v.z() as f32);
+        let nx = uy * vz - uz * vy;
+        let ny = uz * vx - ux * vz;
+        let nz = ux * vy - uy * vx;
+        let n_len = (nx * nx + ny * ny + nz * nz).sqrt();
+        let n_len = if n_len > 0.0 { n_len } else { 1.0 };
+        let nx = nx / n_len;
+        let ny = ny / n_len;
+        let nz = nz / n_len;
+
         for corner in [q, q + u, q + v, q + u + v].iter() {
             self.vertices.push(corner.x() as f32);
             self.vertices.push(corner.y() as f32);
             self.vertices.push(corner.z() as f32);
+            // All 4 corners share the same face normal
+            self.normals.push(nx);
+            self.normals.push(ny);
+            self.normals.push(nz);
         }
 
         // Triangle 0,1,2
@@ -212,7 +235,7 @@ impl GpuScene {
             Hittable::Translate(inner, offset, _) => {
                 let base_idx = self.vertices.len();
                 self.tessellate_object(inner, mat_idx);
-                // Apply offset to all newly added vertices
+                // Apply offset to all newly added vertices; normals are direction vectors, unaffected by translation
                 let ox = offset.x() as f32;
                 let oy = offset.y() as f32;
                 let oz = offset.z() as f32;
@@ -227,18 +250,40 @@ impl GpuScene {
                 self.tessellate_object(inner, mat_idx);
                 let st = *sin_theta as f32;
                 let ct = *cos_theta as f32;
+                // Rotate vertices
                 for i in (base_idx..self.vertices.len()).step_by(3) {
                     let x = self.vertices[i];
                     let z = self.vertices[i + 2];
                     self.vertices[i] = ct * x + st * z;
                     self.vertices[i + 2] = -st * x + ct * z;
                 }
+                // Rotate normals (same rotation, direction vectors)
+                for i in (base_idx..self.normals.len()).step_by(3) {
+                    let nx = self.normals[i];
+                    let nz = self.normals[i + 2];
+                    self.normals[i] = ct * nx + st * nz;
+                    self.normals[i + 2] = -st * nx + ct * nz;
+                }
             }
             Hittable::ConstantMedium(_) => {
                 // Skipped for Phase 3
             }
-            Hittable::HittableList(_) | Hittable::BvhNode(_) => {
-                // Should not appear here — already flattened
+            Hittable::HittableList(list) => {
+                for child in &list.objects {
+                    self.tessellate_object(child, mat_idx);
+                }
+            }
+            Hittable::BvhNode(bvh) => {
+                // Defensive: recurse into BVH nodes (should not appear after flatten, but handle gracefully)
+                match bvh {
+                    crate::bvh::BvhNode::Leaf { object, .. } => {
+                        self.tessellate_object(object, mat_idx);
+                    }
+                    crate::bvh::BvhNode::Split { left, right, .. } => {
+                        self.tessellate_object(&Hittable::BvhNode((**left).clone()), mat_idx);
+                        self.tessellate_object(&Hittable::BvhNode((**right).clone()), mat_idx);
+                    }
+                }
             }
         }
     }
@@ -342,5 +387,142 @@ mod tests {
         assert_eq!(scene.tri_to_material.len(), 2);
         assert_eq!(scene.indices.len(), 6);
         assert_eq!(scene.vertices.len(), 12);
+    }
+
+    #[test]
+    fn test_gpu_material_size() {
+        // Must match GPU-side GpuMaterialData (common.h) = 36 bytes (4-byte aligned)
+        assert_eq!(std::mem::size_of::<GpuMaterial>(), 36);
+    }
+
+    #[test]
+    fn test_gpu_material_field_offsets() {
+        use std::mem::offset_of;
+        // Verify fields are at expected offsets (no padding with 4-byte aligned GpuFloat3)
+        assert_eq!(offset_of!(GpuMaterial, mat_type), 0);
+        assert_eq!(offset_of!(GpuMaterial, albedo), 4);
+        assert_eq!(offset_of!(GpuMaterial, fuzz), 16);
+        assert_eq!(offset_of!(GpuMaterial, ir), 20);
+        assert_eq!(offset_of!(GpuMaterial, emission), 24);
+    }
+
+    #[test]
+    fn test_material_conversion_emission_preserved() {
+        let tex = crate::texture::Texture::SolidColor(Color::new(1.0, 2.0, 3.0));
+        let m = Material::DiffuseLight { tex };
+        let g = material_to_gpu(&m);
+        assert_eq!(g.mat_type, 3);
+        assert_eq!(g.emission, [1.0f32, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_sphere_vertex_normals_unit_length() {
+        let s = Sphere::stationary(
+            Point3::new(0.0, 0.0, 0.0), 1.0,
+            Material::lambertian_color(Color::new(0.5, 0.5, 0.5)),
+        );
+        let world = Hittable::Sphere(s);
+        let scene = GpuScene::from_world(&world);
+
+        assert_eq!(scene.vertices.len(), scene.normals.len());
+        for i in (0..scene.normals.len()).step_by(3) {
+            let nx = scene.normals[i];
+            let ny = scene.normals[i + 1];
+            let nz = scene.normals[i + 2];
+            let n_len = (nx * nx + ny * ny + nz * nz).sqrt();
+            assert!((n_len - 1.0).abs() < 0.001,
+                "normal not unit length: ({},{},{}) len={}", nx, ny, nz, n_len);
+        }
+    }
+
+    #[test]
+    fn test_sphere_vertex_normals_direction() {
+        // Unit sphere at origin: normal == position (both are (x,y,z)/r with r=1)
+        let s = Sphere::stationary(
+            Point3::new(0.0, 0.0, 0.0), 1.0,
+            Material::lambertian_color(Color::new(0.5, 0.5, 0.5)),
+        );
+        let world = Hittable::Sphere(s);
+        let scene = GpuScene::from_world(&world);
+
+        for i in (0..scene.vertices.len()).step_by(3) {
+            let vx = scene.vertices[i];
+            let vy = scene.vertices[i + 1];
+            let vz = scene.vertices[i + 2];
+            let nx = scene.normals[i];
+            let ny = scene.normals[i + 1];
+            let nz = scene.normals[i + 2];
+            // For unit sphere at origin, normal == position
+            assert!((vx - nx).abs() < 0.01, "vx={} nx={}", vx, nx);
+            assert!((vy - ny).abs() < 0.01, "vy={} ny={}", vy, ny);
+            assert!((vz - nz).abs() < 0.01, "vz={} nz={}", vz, nz);
+        }
+    }
+
+    #[test]
+    fn test_quad_vertex_normals_consistent() {
+        let q = Quad::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+            Material::lambertian_color(Color::new(0.5, 0.5, 0.5)),
+        );
+        let world = Hittable::Quad(q);
+        let scene = GpuScene::from_world(&world);
+
+        assert_eq!(scene.normals.len(), 12); // 4 vertices * 3 floats
+        // All 4 vertices should have the same normal
+        let n0 = (&scene.normals[0..3]).to_vec();
+        for vi in 0..4 {
+            let base = vi * 3;
+            for c in 0..3 {
+                assert!((scene.normals[base + c] - n0[c]).abs() < 0.001,
+                    "vertex {} component {} differs: {} vs {}", vi, c, scene.normals[base + c], n0[c]);
+            }
+        }
+        // Quad in xy plane, normal should point in +z (or -z depending on winding)
+        let n_len = (n0[0]*n0[0] + n0[1]*n0[1] + n0[2]*n0[2]).sqrt();
+        assert!((n_len - 1.0).abs() < 0.001, "face normal not unit length");
+    }
+
+    #[test]
+    fn test_sphere_vertex_radius() {
+        let s = Sphere::stationary(
+            Point3::new(2.0, 3.0, 4.0), 2.0,
+            Material::lambertian_color(Color::new(0.5, 0.5, 0.5)),
+        );
+        let world = Hittable::Sphere(s);
+        let scene = GpuScene::from_world(&world);
+
+        for i in (0..scene.vertices.len()).step_by(3) {
+            let dx = scene.vertices[i] - 2.0;
+            let dy = scene.vertices[i + 1] - 3.0;
+            let dz = scene.vertices[i + 2] - 4.0;
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            assert!((dist - 2.0).abs() < 0.002, "vertex at distance {} from center, expected 2.0", dist);
+        }
+    }
+
+    #[test]
+    fn test_box_with_transform_not_empty() {
+        // This reproduces the bug where Translate(RotateY(HittableList(quads))) was silently dropped
+        let white = Material::lambertian_color(Color::new(0.73, 0.73, 0.73));
+        let box_geom = crate::quad_box::make_box(
+            &Point3::new(0.0, 0.0, 0.0),
+            &Point3::new(165.0, 330.0, 165.0),
+            white,
+        );
+        let box_rotated = Hittable::rotate_y(box_geom, 15.0);
+        let box_translated = Hittable::translate(box_rotated, Vec3::new(265.0, 0.0, 295.0));
+        let world = Hittable::HittableList(crate::hittable_list::HittableList {
+            objects: vec![box_translated],
+            bbox: crate::aabb::Aabb::default(),
+        });
+        let scene = GpuScene::from_world(&world);
+        // Box = 6 quads = 12 triangles = 24 vertices
+        assert!(!scene.vertices.is_empty(), "Box should produce vertices (was silently dropped before fix)");
+        assert_eq!(scene.tri_to_material.len(), 12, "6 quads * 2 tris = 12, got {}", scene.tri_to_material.len());
+        assert_eq!(scene.vertices.len(), 24 * 3, "6 quads * 4 verts * 3 floats = 72, got {}", scene.vertices.len());
+        assert_eq!(scene.normals.len(), scene.vertices.len(), "normals count must match vertices count");
     }
 }

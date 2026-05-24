@@ -124,6 +124,98 @@ impl Camera {
     }
 
     #[cfg(feature = "cuda")]
+    /// Recursively search the hittable tree for the first area light quad.
+    /// Returns (corner, u, v, area_inv) in f32 for GPU upload.
+    fn find_light_quad(&self, hittable: &Hittable) -> Option<([f32; 3], [f32; 3], [f32; 3], f32)> {
+        match hittable {
+            Hittable::Quad(q) => {
+                if matches!(&q.mat, crate::material::Material::DiffuseLight { .. }) {
+                    let corner = [q.q.x() as f32, q.q.y() as f32, q.q.z() as f32];
+                    let u = [q.u.x() as f32, q.u.y() as f32, q.u.z() as f32];
+                    let v = [q.v.x() as f32, q.v.y() as f32, q.v.z() as f32];
+                    // area = |u × v|
+                    let cross = [
+                        u[1] * v[2] - u[2] * v[1],
+                        u[2] * v[0] - u[0] * v[2],
+                        u[0] * v[1] - u[1] * v[0],
+                    ];
+                    let area = (cross[0]*cross[0] + cross[1]*cross[1] + cross[2]*cross[2]).sqrt();
+                    let area_inv = if area > 0.0 { 1.0 / area } else { 0.0 };
+                    return Some((corner, u, v, area_inv));
+                }
+                None
+            }
+            Hittable::HittableList(list) => {
+                for obj in &list.objects {
+                    let result = self.find_light_quad(obj);
+                    if result.is_some() { return result; }
+                }
+                None
+            }
+            Hittable::BvhNode(bvh) => {
+                match bvh {
+                    crate::bvh::BvhNode::Leaf { object, .. } => self.find_light_quad(object.as_ref()),
+                    crate::bvh::BvhNode::Split { left, right, .. } => {
+                        self.find_light_quad(&Hittable::BvhNode((**left).clone()))
+                            .or_else(|| self.find_light_quad(&Hittable::BvhNode((**right).clone())))
+                    }
+                }
+            }
+            Hittable::Translate(inner, offset, _) => {
+                self.find_light_quad(inner).map(|(corner, u, v, area_inv)| {
+                    let ox = offset.x() as f32;
+                    let oy = offset.y() as f32;
+                    let oz = offset.z() as f32;
+                    ([corner[0] + ox, corner[1] + oy, corner[2] + oz], u, v, area_inv)
+                })
+            }
+            Hittable::RotateY(inner, sin_theta, cos_theta, _) => {
+                self.find_light_quad(inner).map(|(corner, u, v, area_inv)| {
+                    let st = *sin_theta as f32;
+                    let ct = *cos_theta as f32;
+                    let rotate = |p: [f32; 3]| -> [f32; 3] {
+                        [ct * p[0] + st * p[2], p[1], -st * p[0] + ct * p[2]]
+                    };
+                    (rotate(corner), rotate(u), rotate(v), area_inv)
+                })
+            }
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    /// Recursively search the hittable tree for the glass sphere (dielectric material).
+    /// Returns (center, radius) in f32 for GPU MIS direction sampling.
+    fn find_glass_sphere(&self, hittable: &Hittable) -> Option<([f32; 3], f32)> {
+        match hittable {
+            Hittable::Sphere(s) => {
+                if matches!(&s.mat, crate::material::Material::Dielectric { .. }) {
+                    let center = [s.center.orig.x() as f32, s.center.orig.y() as f32, s.center.orig.z() as f32];
+                    let radius = s.radius as f32;
+                    return Some((center, radius));
+                }
+                None
+            }
+            Hittable::HittableList(list) => {
+                for obj in &list.objects {
+                    let result = self.find_glass_sphere(obj);
+                    if result.is_some() { return result; }
+                }
+                None
+            }
+            Hittable::BvhNode(bvh) => {
+                match bvh {
+                    crate::bvh::BvhNode::Leaf { object, .. } => self.find_glass_sphere(object.as_ref()),
+                    crate::bvh::BvhNode::Split { left, right, .. } => {
+                        self.find_glass_sphere(&Hittable::BvhNode((**left).clone()))
+                            .or_else(|| self.find_glass_sphere(&Hittable::BvhNode((**right).clone())))
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub fn render_gpu(&self, world: &Hittable, output_path: &str, seed: Option<u64>, denoise: bool) -> anyhow::Result<()> {
         use crate::cuda::optix::{self, BridgeCameraParams, OptiXBridge};
         use crate::cuda::scene::GpuScene;
@@ -132,6 +224,10 @@ impl Camera {
         let h = self.image_height as usize;
         let spp = self.samples_per_pixel;
         let sqrt_spp = self.sqrt_spp;
+
+        // Find area light geometry for importance sampling (before world flattening)
+        let light_info = self.find_light_quad(world);
+        let sphere_info = self.find_glass_sphere(world);
 
         // Build GPU scene from world
         let gpu_scene = GpuScene::from_world(world);
@@ -154,7 +250,7 @@ impl Camera {
         // Build acceleration structure
         let tri_count = gpu_scene.tri_to_material.len() as i32;
         let vertex_count = (gpu_scene.vertices.len() / 3) as i32;
-        if !bridge.build_accel(&gpu_scene.vertices, &gpu_scene.indices, tri_count, vertex_count) {
+        if !bridge.build_accel(&gpu_scene.vertices, &gpu_scene.indices, &gpu_scene.normals, tri_count, vertex_count) {
             anyhow::bail!("Failed to build BVH: {}", bridge.get_error());
         }
 
@@ -170,6 +266,14 @@ impl Camera {
 
         // Set render params
         bridge.set_render_params(sqrt_spp, self.max_depth, self.pixel_samples_scale as f32);
+
+        // Set light params for importance sampling
+        if let Some((corner, u, v, area_inv)) = light_info {
+            bridge.set_light(&corner, &u, &v, area_inv);
+        }
+        if let Some((center, radius)) = sphere_info {
+            bridge.set_sphere(&center, radius);
+        }
 
         // Create pipeline
         if !bridge.create_pipeline(w as i32, h as i32) {
@@ -370,17 +474,28 @@ fn f64x3_to_f32x3(v: crate::vec3::Vec3) -> [f32; 3] {
 
 #[cfg(feature = "cuda")]
 fn save_png_gpu(path: &str, width: u32, height: u32, data: &[f32]) -> anyhow::Result<()> {
+    use crate::color_io::linear_to_gamma;
+    use crate::interval::Interval;
     use image::{ImageBuffer, Rgb};
+
+    let intensity = Interval::new(0.0, 0.9999);
     let mut buf: ImageBuffer<Rgb<u16>, Vec<u16>> = ImageBuffer::new(width, height);
     for (idx, chunk) in data.chunks(3).enumerate() {
         if chunk.len() < 3 { break; }
         let x = idx as u32 % width;
         let y = idx as u32 / width;
-        // Convert linear float [0, ~100] to 10-bit scaled 16-bit
-        let r = (chunk[0].max(0.0).min(50.0) / 50.0 * 65535.0).round() as u16;
-        let g = (chunk[1].max(0.0).min(50.0) / 50.0 * 65535.0).round() as u16;
-        let b = (chunk[2].max(0.0).min(50.0) / 50.0 * 65535.0).round() as u16;
-        buf.put_pixel(x, y, Rgb([r, g, b]));
+        // Match CPU pixel_to_10bit: sqrt gamma + 10-bit scaled to 16-bit
+        let r = linear_to_gamma(chunk[0] as f64);
+        let g = linear_to_gamma(chunk[1] as f64);
+        let b = linear_to_gamma(chunk[2] as f64);
+        let r10 = (1024.0 * intensity.clamp(r)) as u16;
+        let g10 = (1024.0 * intensity.clamp(g)) as u16;
+        let b10 = (1024.0 * intensity.clamp(b)) as u16;
+        let scale = 65535.0 / 1023.0;
+        let r16 = (r10 as f64 * scale) as u16;
+        let g16 = (g10 as f64 * scale) as u16;
+        let b16 = (b10 as f64 * scale) as u16;
+        buf.put_pixel(x, y, Rgb([r16, g16, b16]));
     }
     buf.save(path)?;
     Ok(())
@@ -539,5 +654,35 @@ mod tests {
         assert!(result.is_ok());
         assert!(out.exists());
         let _ = fs::remove_file(&out);
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn test_gpu_png_gamma_matches_cpu_encoding() {
+        use crate::color_io::pixel_to_10bit;
+        use crate::vec3::Color;
+        let tmp = std::env::temp_dir().join("rt_test_gpu_gamma.png");
+        let p = tmp.to_str().unwrap();
+
+        // Render a single white pixel and save via GPU path
+        let data: Vec<f32> = vec![1.0, 1.0, 1.0];
+        save_png_gpu(p, 1, 1, &data).unwrap();
+
+        // Read back and verify the pixel is bright (not dark)
+        let img = image::open(p).unwrap().into_rgb16();
+        let px = img.get_pixel(0, 0);
+        let gpu_r = px.0[0] as f64;
+
+        // CPU encoding of the same value
+        let cpu_px = pixel_to_10bit(&Color::new(1.0, 1.0, 1.0));
+        let cpu_r = cpu_px[0] as f64;
+
+        // GPU and CPU encodings should be very close
+        let diff = (gpu_r - cpu_r).abs();
+        assert!(diff < 100.0, "GPU gamma {} vs CPU {} diff too large", gpu_r, cpu_r);
+        // White pixel should be bright (> 60000 in 16-bit)
+        assert!(gpu_r > 60000.0, "GPU pixel {} should be bright white", gpu_r);
+
+        let _ = std::fs::remove_file(&tmp);
     }
 }

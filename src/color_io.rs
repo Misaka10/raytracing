@@ -143,4 +143,27 @@ mod tests {
         let p = pixel_to_16bit(&c);
         assert!(p[0] > 60000);
     }
+
+    #[test]
+    fn test_gamma_mid_gray() {
+        // Mid-gray (0.18 linear) should map to ~0.424 gamma-corrected
+        let g = linear_to_gamma(0.18);
+        let expected = 0.18f64.sqrt();
+        assert!((g - expected).abs() < 1e-10);
+        // Gamma-corrected mid-gray in 10-bit should be ~434 (out of 1023)
+        let v10 = (1024.0 * expected.min(0.9999)) as u16;
+        assert!(v10 > 400 && v10 < 450, "mid-gray 10-bit value {} out of range", v10);
+    }
+
+    #[test]
+    fn test_linear_to_gamma_monotonic() {
+        // Gamma correction should be monotonic
+        let mut prev = 0.0;
+        for i in 0..=1000 {
+            let linear = i as f64 / 1000.0;
+            let gamma = linear_to_gamma(linear);
+            assert!(gamma >= prev, "not monotonic at {}: {} < {}", linear, gamma, prev);
+            prev = gamma;
+        }
+    }
 }

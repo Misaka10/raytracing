@@ -64,6 +64,7 @@ extern "C" {
         bridge: *mut std::ffi::c_void,
         vertices: *const f32,
         indices: *const u32,
+        normals: *const f32,
         tri_count: i32,
         vertex_count: i32,
     ) -> bool;
@@ -105,6 +106,20 @@ extern "C" {
     fn optix_bridge_get_device_name(bridge: *const std::ffi::c_void) -> *const c_char;
 
     fn optix_bridge_denoise(bridge: *mut std::ffi::c_void) -> bool;
+
+    fn optix_bridge_set_sphere(
+        bridge: *mut std::ffi::c_void,
+        center: *const f32,
+        radius: f32,
+    ) -> bool;
+
+    fn optix_bridge_set_light(
+        bridge: *mut std::ffi::c_void,
+        corner: *const f32,
+        u: *const f32,
+        v: *const f32,
+        area_inv: f32,
+    ) -> bool;
 }
 
 impl OptiXBridge {
@@ -130,12 +145,13 @@ impl OptiXBridge {
     }
 
     /// Build triangle acceleration structure (RT Core hardware BVH).
-    pub fn build_accel(&mut self, vertices: &[f32], indices: &[u32], tri_count: i32, vertex_count: i32) -> bool {
+    pub fn build_accel(&mut self, vertices: &[f32], indices: &[u32], normals: &[f32], tri_count: i32, vertex_count: i32) -> bool {
         unsafe {
             optix_bridge_build_accel(
                 self._private,
                 vertices.as_ptr(),
                 indices.as_ptr(),
+                normals.as_ptr(),
                 tri_count,
                 vertex_count,
             )
@@ -216,6 +232,30 @@ impl OptiXBridge {
             std::ffi::CStr::from_ptr(ptr)
                 .to_str()
                 .unwrap_or("")
+        }
+    }
+
+    /// Set area light geometry for importance sampling.
+    pub fn set_light(&mut self, corner: &[f32; 3], u: &[f32; 3], v: &[f32; 3], area_inv: f32) -> bool {
+        unsafe {
+            optix_bridge_set_light(
+                self._private,
+                corner.as_ptr(),
+                u.as_ptr(),
+                v.as_ptr(),
+                area_inv,
+            )
+        }
+    }
+
+    /// Set sphere geometry for MIS direction sampling (matching CPU lights list).
+    pub fn set_sphere(&mut self, center: &[f32; 3], radius: f32) -> bool {
+        unsafe {
+            optix_bridge_set_sphere(
+                self._private,
+                center.as_ptr(),
+                radius,
+            )
         }
     }
 

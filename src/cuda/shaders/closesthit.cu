@@ -9,29 +9,37 @@ extern "C" __global__ void __closesthit__ch() {
     // OptiX 9.x: set individual payload registers (all unsigned int)
     optixSetPayload_0(0); // miss = false
 
-    // Hit point (world space)
-    const float3 ray_origin = optixGetWorldRayOrigin();
-    const float3 ray_dir    = optixGetWorldRayDirection();
-    const float  t          = optixGetRayTmax();
-    float3 hit = vec_add(ray_origin, scl_mul(t, ray_dir));
+    // Hit point (world space) — OptiX returns built-in float3, convert to GpuFloat3
+    float3 _ro = optixGetWorldRayOrigin();
+    float3 _rd = optixGetWorldRayDirection();
+    GpuFloat3 ray_origin = {_ro.x, _ro.y, _ro.z};
+    GpuFloat3 ray_dir    = {_rd.x, _rd.y, _rd.z};
+    const float  t       = optixGetRayTmax();
+    GpuFloat3 hit = vec_add(ray_origin, scl_mul(t, ray_dir));
     optixSetPayload_1(__float_as_uint(hit.x));
     optixSetPayload_2(__float_as_uint(hit.y));
     optixSetPayload_3(__float_as_uint(hit.z));
 
-    // Compute face normal from triangle vertices
+    // Smooth normal via barycentric interpolation of vertex normals
+    // (for quads all 3 vertex normals are identical → interpolated result = face normal)
     unsigned int prim_idx = optixGetPrimitiveIndex();
     unsigned int i0 = launch_params.index_buffer[prim_idx * 3 + 0];
     unsigned int i1 = launch_params.index_buffer[prim_idx * 3 + 1];
     unsigned int i2 = launch_params.index_buffer[prim_idx * 3 + 2];
 
-    float3 v0 = launch_params.vertex_buffer[i0];
-    float3 v1 = launch_params.vertex_buffer[i1];
-    float3 v2 = launch_params.vertex_buffer[i2];
+    GpuFloat3 n0 = launch_params.normal_buffer[i0];
+    GpuFloat3 n1 = launch_params.normal_buffer[i1];
+    GpuFloat3 n2 = launch_params.normal_buffer[i2];
 
-    float3 e1 = vec_sub(v1, v0);
-    float3 e2 = vec_sub(v2, v0);
-    float3 normal = vec_cross(e1, e2);
-    // Use geometric normal (unnormalized is fine for direction check)
+    float2 bary = optixGetTriangleBarycentrics();
+    float beta  = bary.x;
+    float gamma = bary.y;
+    float alpha = 1.0f - beta - gamma;
+
+    GpuFloat3 normal = vec_add(
+        vec_add(scl_mul(alpha, n0), scl_mul(beta, n1)),
+        scl_mul(gamma, n2)
+    );
     normal = vec_normalize(normal);
 
     optixSetPayload_4(__float_as_uint(normal.x));
