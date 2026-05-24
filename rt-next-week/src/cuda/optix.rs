@@ -65,6 +65,7 @@ extern "C" {
         vertices: *const f32,
         indices: *const u32,
         tri_count: i32,
+        vertex_count: i32,
     ) -> bool;
 
     fn optix_bridge_create_pipeline(
@@ -129,13 +130,14 @@ impl OptiXBridge {
     }
 
     /// Build triangle acceleration structure (RT Core hardware BVH).
-    pub fn build_accel(&mut self, vertices: &[f32], indices: &[u32], tri_count: i32) -> bool {
+    pub fn build_accel(&mut self, vertices: &[f32], indices: &[u32], tri_count: i32, vertex_count: i32) -> bool {
         unsafe {
             optix_bridge_build_accel(
                 self._private,
                 vertices.as_ptr(),
                 indices.as_ptr(),
                 tri_count,
+                vertex_count,
             )
         }
     }

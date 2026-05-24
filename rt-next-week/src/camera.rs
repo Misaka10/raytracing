@@ -153,7 +153,8 @@ impl Camera {
 
         // Build acceleration structure
         let tri_count = gpu_scene.tri_to_material.len() as i32;
-        if !bridge.build_accel(&gpu_scene.vertices, &gpu_scene.indices, tri_count) {
+        let vertex_count = (gpu_scene.vertices.len() / 3) as i32;
+        if !bridge.build_accel(&gpu_scene.vertices, &gpu_scene.indices, tri_count, vertex_count) {
             anyhow::bail!("Failed to build BVH: {}", bridge.get_error());
         }
 

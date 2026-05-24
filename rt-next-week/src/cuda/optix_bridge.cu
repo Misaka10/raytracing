@@ -269,15 +269,20 @@ OptiXBridge* optix_bridge_init(
     CUDA_CHECK_FREE(cuDeviceGetName(bridge->deviceName, sizeof(bridge->deviceName), cuDevice));
     fprintf(stderr, "[OptiXBridge] Using CUDA device: %s\n", bridge->deviceName);
 
-    CUDA_CHECK(cuCtxCreate(&bridge->cuCtx, NULL, CU_CTX_SCHED_SPIN, cuDevice));
+    CUDA_CHECK(cuCtxCreate(&bridge->cuCtx, NULL, 0, cuDevice));
     CUDA_CHECK(cuStreamCreate(&bridge->stream, CU_STREAM_DEFAULT));
 
     // --- OptiX init ---
     OPTIX_CHECK(optixInit());
 
+    // OptiX log callback for detailed diagnostics
+    static auto logCallback = [](unsigned int level, const char* tag, const char* msg, void*) {
+        fprintf(stderr, "[OptiX][%u][%s] %s\n", level, tag, msg);
+    };
+
     OptixDeviceContextOptions optixOpts = {};
-    optixOpts.logCallbackFunction = NULL;
-    optixOpts.logCallbackLevel = 3; // warnings + errors
+    optixOpts.logCallbackFunction = logCallback;
+    optixOpts.logCallbackLevel = 4; // all messages including info
 
     OPTIX_CHECK(optixDeviceContextCreate(bridge->cuCtx, &optixOpts, &bridge->optixCtx));
 
@@ -450,12 +455,13 @@ bool optix_bridge_build_accel(
     OptiXBridge* bridge,
     const float* vertices,
     const unsigned int* indices,
-    int tri_count)
+    int tri_count,
+    int vertex_count)
 {
     if (!bridge) return false;
 
-    const size_t vertexSize = tri_count * 3 * 3 * sizeof(float);
-    const size_t indexSize  = tri_count * 3 * sizeof(unsigned int);
+    const size_t vertexSize = (size_t)vertex_count * 3 * sizeof(float);
+    const size_t indexSize  = (size_t)tri_count * 3 * sizeof(unsigned int);
 
     // Upload vertex and index data
     CUDA_CHECK(cuMemAlloc(&bridge->d_vertexBuffer, vertexSize));
@@ -467,13 +473,14 @@ bool optix_bridge_build_accel(
     OptixBuildInput buildInput = {};
     buildInput.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
     buildInput.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
-    buildInput.triangleArray.numVertices = (unsigned int)(tri_count * 3);
+    buildInput.triangleArray.numVertices = (unsigned int)vertex_count;
     buildInput.triangleArray.vertexBuffers = &bridge->d_vertexBuffer;
     buildInput.triangleArray.vertexStrideInBytes = 3 * sizeof(float);
     buildInput.triangleArray.indexFormat = OPTIX_INDICES_FORMAT_UNSIGNED_INT3;
     buildInput.triangleArray.numIndexTriplets = (unsigned int)tri_count;
     buildInput.triangleArray.indexBuffer = bridge->d_indexBuffer;
-    buildInput.triangleArray.flags = NULL; // one flag per triangle, NULL = all 0
+    unsigned int triangleFlags[1] = { OPTIX_GEOMETRY_FLAG_NONE };
+    buildInput.triangleArray.flags = triangleFlags;
     buildInput.triangleArray.numSbtRecords = 1;
 
     OptixAccelBuildOptions accelOpts = {};
@@ -491,7 +498,7 @@ bool optix_bridge_build_accel(
         &bufferSizes
     ));
 
-    // Compacted size buffer
+    // Temp buffer
     CUdeviceptr d_temp;
     CUDA_CHECK(cuMemAlloc(&d_temp, bufferSizes.tempSizeInBytes));
 
