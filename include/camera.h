@@ -15,6 +15,13 @@
 #include "pdf.h"
 #include "material.h"
 
+#include <string>
+#include <vector>
+
+// From stb_image_write.h (implementation in main.cc)
+extern "C" int stbi_write_png(char const *filename, int w, int h, int comp,
+                               const void *data, int stride_bytes);
+
 
 class camera {
   public:
@@ -32,13 +39,20 @@ class camera {
     double defocus_angle = 0;  // Variation angle of rays through each pixel
     double focus_dist = 10;    // Distance from camera lookfrom point to plane of perfect focus
 
+    std::string png_filename;
+
     void render(const hittable& world, const hittable& lights) {
         initialize();
 
         std::cout << "P3\n" << image_width << ' ' << image_height << "\n255\n";
 
+        std::vector<unsigned char> png_data;
+        if (!png_filename.empty())
+            png_data.resize(image_width * image_height * 3);
+
         for (int j = 0; j < image_height; j++) {
-            std::clog << "\rScanlines remaining: " << (image_height - j) << ' ' << std::flush;
+            std::clog << "\rProgress: " << ((j + 1) * 100 / image_height) << "%  "
+                      << "Scanlines remaining: " << (image_height - j) << ' ' << std::flush;
             for (int i = 0; i < image_width; i++) {
                 color pixel_color(0,0,0);
                 for (int s_j = 0; s_j < sqrt_spp; s_j++) {
@@ -47,11 +61,29 @@ class camera {
                         pixel_color += ray_color(r, max_depth, world, lights);
                     }
                 }
-                write_color(std::cout, pixel_samples_scale * pixel_color);
+                int rbyte, gbyte, bbyte;
+                pixel_to_bytes(pixel_samples_scale * pixel_color, rbyte, gbyte, bbyte);
+                write_color(std::cout, rbyte, gbyte, bbyte);
+
+                if (!png_filename.empty()) {
+                    int idx = (j * image_width + i) * 3;
+                    png_data[idx + 0] = rbyte;
+                    png_data[idx + 1] = gbyte;
+                    png_data[idx + 2] = bbyte;
+                }
             }
         }
 
         std::clog << "\rDone.                 \n";
+
+        if (!png_filename.empty()) {
+            int result = stbi_write_png(png_filename.c_str(), image_width, image_height, 3,
+                                       png_data.data(), image_width * 3);
+            if (result)
+                std::clog << "Wrote " << png_filename << '\n';
+            else
+                std::clog << "ERROR: Could not write " << png_filename << '\n';
+        }
     }
 
   private:

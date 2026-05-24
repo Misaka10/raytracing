@@ -9,6 +9,11 @@
 // along with this software. If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
 //==============================================================================================
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+#include <ctime>
+
 #include "rtweekend.h"
 
 #include "camera.h"
@@ -19,6 +24,8 @@
 
 
 int main() {
+    std::srand(static_cast<unsigned int>(std::time(nullptr)));
+
     hittable_list world;
 
     auto red   = make_shared<lambertian>(color(.65, .05, .05));
@@ -67,6 +74,11 @@ int main() {
     cam.vup      = vec3(0, 1, 0);
 
     cam.defocus_angle = 0;
+    cam.png_filename  = "output.png";
 
     cam.render(world, lights);
+
+    std::cout << std::flush;
+    std::clog << "Press Enter to exit..." << std::flush;
+    std::cin.get();
 }
