@@ -81,20 +81,10 @@ impl GpuScene {
             });
         }
 
-        // Tessellate each object
+        // Tessellate each object, applying accumulated transforms
         for (i, obj) in objects.iter().enumerate() {
             let mat_idx = mat_indices[i];
-            match obj {
-                Hittable::Sphere(s) => scene.tessellate_sphere(s, mat_idx),
-                Hittable::Quad(q) => scene.tessellate_quad(q, mat_idx),
-                Hittable::BvhNode(_)
-                | Hittable::HittableList(_)
-                | Hittable::Translate(..)
-                | Hittable::RotateY(..)
-                | Hittable::ConstantMedium(_) => {
-                    // Already flattened or skipped for Phase 2
-                }
-            }
+            scene.tessellate_object(obj, mat_idx);
         }
 
         scene
@@ -182,7 +172,7 @@ fn get_material(h: &Hittable) -> Option<&Material> {
     }
 }
 
-/// Flatten a hittable tree into a list of leaf objects (no BVH, no lists)
+/// Flatten a hittable tree into a list of leaf/transform objects (no BVH, no lists)
 fn flatten_hittable(obj: &Hittable, out: &mut Vec<Hittable>) {
     match obj {
         Hittable::HittableList(list) => {
@@ -193,9 +183,8 @@ fn flatten_hittable(obj: &Hittable, out: &mut Vec<Hittable>) {
         Hittable::BvhNode(bvh) => {
             flatten_bvh(bvh, out);
         }
-        Hittable::Translate(inner, _, _) | Hittable::RotateY(inner, _, _, _) => {
-            flatten_hittable(inner, out);
-        }
+        // Keep transforms as-is — they'll be handled in tessellation
+        Hittable::Translate(..) | Hittable::RotateY(..) |
         Hittable::Sphere(_) | Hittable::Quad(_) | Hittable::ConstantMedium(_) => {
             out.push(obj.clone());
         }
@@ -210,6 +199,47 @@ fn flatten_bvh(node: &BvhNode, out: &mut Vec<Hittable>) {
         BvhNode::Split { left, right, .. } => {
             flatten_bvh(left, out);
             flatten_bvh(right, out);
+        }
+    }
+}
+
+impl GpuScene {
+    /// Recursively tessellate an object, applying any transforms to vertex data
+    fn tessellate_object(&mut self, obj: &Hittable, mat_idx: u32) {
+        match obj {
+            Hittable::Sphere(s) => self.tessellate_sphere(s, mat_idx),
+            Hittable::Quad(q) => self.tessellate_quad(q, mat_idx),
+            Hittable::Translate(inner, offset, _) => {
+                let base_idx = self.vertices.len();
+                self.tessellate_object(inner, mat_idx);
+                // Apply offset to all newly added vertices
+                let ox = offset.x() as f32;
+                let oy = offset.y() as f32;
+                let oz = offset.z() as f32;
+                for i in (base_idx..self.vertices.len()).step_by(3) {
+                    self.vertices[i] += ox;
+                    self.vertices[i + 1] += oy;
+                    self.vertices[i + 2] += oz;
+                }
+            }
+            Hittable::RotateY(inner, sin_theta, cos_theta, _) => {
+                let base_idx = self.vertices.len();
+                self.tessellate_object(inner, mat_idx);
+                let st = *sin_theta as f32;
+                let ct = *cos_theta as f32;
+                for i in (base_idx..self.vertices.len()).step_by(3) {
+                    let x = self.vertices[i];
+                    let z = self.vertices[i + 2];
+                    self.vertices[i] = ct * x + st * z;
+                    self.vertices[i + 2] = -st * x + ct * z;
+                }
+            }
+            Hittable::ConstantMedium(_) => {
+                // Skipped for Phase 3
+            }
+            Hittable::HittableList(_) | Hittable::BvhNode(_) => {
+                // Should not appear here — already flattened
+            }
         }
     }
 }
