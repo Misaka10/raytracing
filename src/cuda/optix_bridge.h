@@ -100,6 +100,11 @@ bool optix_bridge_render(
     unsigned int seed
 );
 
+/* Apply OptiX AI denoiser (Tensor Core accelerated, HDR model).
+   Denoises the last rendered frame in-place (modifies d_output).
+   Must be called after render. Returns true on success. */
+bool optix_bridge_denoise(OptiXBridge* bridge);
+
 /* Get last error message. */
 const char* optix_bridge_get_error(const OptiXBridge* bridge);
 

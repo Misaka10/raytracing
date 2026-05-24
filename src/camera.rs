@@ -124,7 +124,7 @@ impl Camera {
     }
 
     #[cfg(feature = "cuda")]
-    pub fn render_gpu(&self, world: &Hittable, output_path: &str, seed: Option<u64>) -> anyhow::Result<()> {
+    pub fn render_gpu(&self, world: &Hittable, output_path: &str, seed: Option<u64>, denoise: bool) -> anyhow::Result<()> {
         use crate::cuda::optix::{self, BridgeCameraParams, OptiXBridge};
         use crate::cuda::scene::GpuScene;
 
@@ -201,6 +201,14 @@ impl Camera {
         eprintln!("Rendering GPU {}x{} with {} spp...", w, h, spp);
         if !bridge.render(&mut output, &cam, seed as u32) {
             anyhow::bail!("GPU render failed: {}", bridge.get_error());
+        }
+
+        // Apply AI denoiser if requested
+        if denoise {
+            eprintln!("Applying AI denoiser (Tensor Core)...");
+            if !bridge.denoise() {
+                eprintln!("Warning: denoise failed: {}", bridge.get_error());
+            }
         }
 
         // Convert float buffer to 16-bit PNG

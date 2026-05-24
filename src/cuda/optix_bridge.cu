@@ -124,6 +124,15 @@ struct OptiXBridge {
     unsigned int                 maxDepth;
     float                        pixelScale;
 
+    // Denoiser
+    OptixDenoiser                denoiser;
+    CUdeviceptr                  d_denoiserState;
+    size_t                       denoiserStateSize;
+    CUdeviceptr                  d_denoiserScratch;
+    size_t                       denoiserScratchSize;
+    CUdeviceptr                  d_denoisedOutput;
+    bool                         denoiserSetup;
+
     char                         errorMsg[512];
 };
 
@@ -215,6 +224,13 @@ OptiXBridge* optix_bridge_init(
     bridge->sqrtSpp = 1;
     bridge->maxDepth = 50;
     bridge->pixelScale = 1.0f;
+    bridge->denoiser = 0;
+    bridge->d_denoiserState = 0;
+    bridge->denoiserStateSize = 0;
+    bridge->d_denoiserScratch = 0;
+    bridge->denoiserScratchSize = 0;
+    bridge->d_denoisedOutput = 0;
+    bridge->denoiserSetup = false;
     bridge->d_output = 0;
     bridge->d_launchParams = 0;
     bridge->d_materials = 0;
@@ -411,6 +427,10 @@ void optix_bridge_destroy(OptiXBridge* bridge) {
 
     if (bridge->d_output)      cuMemFree(bridge->d_output);
     if (bridge->d_launchParams) cuMemFree(bridge->d_launchParams);
+    if (bridge->d_denoisedOutput) cuMemFree(bridge->d_denoisedOutput);
+    if (bridge->d_denoiserScratch) cuMemFree(bridge->d_denoiserScratch);
+    if (bridge->d_denoiserState) cuMemFree(bridge->d_denoiserState);
+    if (bridge->denoiser)       optixDenoiserDestroy(bridge->denoiser);
     if (bridge->d_triMaterial) cuMemFree(bridge->d_triMaterial);
     if (bridge->d_materials)   cuMemFree(bridge->d_materials);
     if (bridge->d_vertexBuffer) cuMemFree(bridge->d_vertexBuffer);
@@ -659,6 +679,113 @@ bool optix_bridge_set_render_params(OptiXBridge* bridge, unsigned int sqrt_spp, 
     bridge->sqrtSpp = sqrt_spp;
     bridge->maxDepth = max_depth;
     bridge->pixelScale = pixel_samples_scale;
+    return true;
+}
+
+bool optix_bridge_denoise(OptiXBridge* bridge) {
+    if (!bridge || !bridge->d_output || bridge->width == 0) return false;
+
+    int width = bridge->width;
+    int height = bridge->height;
+
+    // Create HDR denoiser (Tensor Core accelerated, no guide buffers needed)
+    if (!bridge->denoiser) {
+        OptixDenoiserOptions opts = {};
+        opts.guideAlbedo = 0;
+        opts.guideNormal = 0;
+
+        OPTIX_CHECK(optixDenoiserCreate(
+            bridge->optixCtx,
+            OPTIX_DENOISER_MODEL_KIND_HDR,
+            &opts,
+            &bridge->denoiser
+        ));
+
+        OptixDenoiserSizes sizes;
+        OPTIX_CHECK(optixDenoiserComputeMemoryResources(
+            bridge->denoiser,
+            (unsigned int)width,
+            (unsigned int)height,
+            &sizes
+        ));
+
+        bridge->denoiserStateSize = sizes.stateSizeInBytes;
+        bridge->denoiserScratchSize = sizes.withoutOverlapScratchSizeInBytes;
+
+        CUDA_CHECK(cuMemAlloc(&bridge->d_denoiserState, bridge->denoiserStateSize));
+        CUDA_CHECK(cuMemAlloc(&bridge->d_denoiserScratch, bridge->denoiserScratchSize));
+
+        OPTIX_CHECK(optixDenoiserSetup(
+            bridge->denoiser,
+            bridge->stream,
+            (unsigned int)width,
+            (unsigned int)height,
+            bridge->d_denoiserState,
+            bridge->denoiserStateSize,
+            bridge->d_denoiserScratch,
+            bridge->denoiserScratchSize
+        ));
+
+        // Allocate denoised output buffer (same size as d_output)
+        size_t outputSize = width * height * 3 * sizeof(float);
+        CUDA_CHECK(cuMemAlloc(&bridge->d_denoisedOutput, outputSize));
+
+        bridge->denoiserSetup = true;
+        fprintf(stderr, "[OptiXBridge] Denoiser created (HDR model, Tensor Core accelerated)\n");
+    }
+
+    unsigned int rowStride = (unsigned int)(width * 3 * sizeof(float));
+
+    // Input color layer
+    OptixImage2D inputImage = {};
+    inputImage.data = bridge->d_output;
+    inputImage.width = (unsigned int)width;
+    inputImage.height = (unsigned int)height;
+    inputImage.rowStrideInBytes = rowStride;
+    inputImage.pixelStrideInBytes = 3 * sizeof(float);
+    inputImage.format = OPTIX_PIXEL_FORMAT_FLOAT3;
+
+    // Output goes to a separate buffer, then copied back to d_output
+    OptixImage2D outputImage = {};
+    outputImage.data = bridge->d_denoisedOutput;
+    outputImage.width = (unsigned int)width;
+    outputImage.height = (unsigned int)height;
+    outputImage.rowStrideInBytes = rowStride;
+    outputImage.pixelStrideInBytes = 3 * sizeof(float);
+    outputImage.format = OPTIX_PIXEL_FORMAT_FLOAT3;
+
+    OptixDenoiserLayer inputLayer = {};
+    inputLayer.input = inputImage;
+    inputLayer.output = outputImage;
+
+    OptixDenoiserParams params = {};
+    params.hdrIntensity = 1.0f;
+
+    OPTIX_CHECK(optixDenoiserInvoke(
+        bridge->denoiser,
+        bridge->stream,
+        &params,
+        bridge->d_denoiserState,
+        bridge->denoiserStateSize,
+        NULL,              // no guide layer for HDR mode
+        &inputLayer,
+        1,                 // single input layer
+        0, 0,              // input offset
+        bridge->d_denoiserScratch,
+        bridge->denoiserScratchSize
+    ));
+
+    CUDA_CHECK(cuStreamSynchronize(bridge->stream));
+
+    // Copy denoised result back to d_output so render() downloads it
+    size_t outputSize = width * height * 3 * sizeof(float);
+    CUDA_CHECK(cuMemcpyDtoD(
+        bridge->d_output,
+        bridge->d_denoisedOutput,
+        outputSize
+    ));
+
+    fprintf(stderr, "[OptiXBridge] Denoised %dx%d image (Tensor Core HDR)\n", width, height);
     return true;
 }
 
