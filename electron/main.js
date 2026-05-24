@@ -17,12 +17,16 @@ function getCalibrationPath() {
     return path.join(app.getPath('userData'), 'calibration.json');
 }
 
+function getGpuCalibrationPath() {
+    return path.join(app.getPath('userData'), 'calibration-gpu.json');
+}
+
 function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1280,
         height: 820,
         minWidth: 900,
-        minHeight: 600,
+        minHeight: 700,
         title: 'RT Renderer - Monte Carlo Path Tracer',
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
@@ -53,8 +57,64 @@ ipcMain.handle('read-calibration', async () => {
     return null;
 });
 
+// Read GPU calibration data
+ipcMain.handle('read-gpu-calibration', async () => {
+    const calPath = getGpuCalibrationPath();
+    if (fs.existsSync(calPath)) {
+        return JSON.parse(fs.readFileSync(calPath, 'utf8'));
+    }
+    return null;
+});
+
+// Check if GPU binary is available
+ipcMain.handle('check-gpu', async () => {
+    const binaryPath = getRustBinaryPath();
+    if (!fs.existsSync(binaryPath)) {
+        return { available: false, error: 'Binary not found' };
+    }
+
+    // Quick test: try rendering a 10x10 image with --gpu
+    const testOutput = path.join(app.getPath('temp'), 'rt_gpu_check.png');
+    return new Promise((resolve) => {
+        const child = spawn(binaryPath, [
+            '--width', '10',
+            '--height', '10',
+            '--samples', '1',
+            '--max-depth', '2',
+            '--output', testOutput,
+            '--seed', '0',
+            '--gpu',
+        ], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 });
+
+        let stderr = '';
+
+        child.stderr.on('data', (data) => {
+            stderr += data.toString();
+        });
+
+        child.on('error', () => {
+            resolve({ available: false, error: 'Failed to spawn GPU binary' });
+        });
+
+        child.on('close', (code) => {
+            try { fs.unlinkSync(testOutput); } catch (_) {}
+            if (code === 0) {
+                resolve({ available: true });
+            } else {
+                // GPU feature not compiled or no CUDA GPU
+                const msg = stderr.includes('cuda') || stderr.includes('CUDA')
+                    ? 'No CUDA GPU detected or driver not installed'
+                    : stderr.includes('GPU support')
+                        ? 'Binary built without CUDA feature'
+                        : 'GPU render failed (exit ' + code + ')';
+                resolve({ available: false, error: msg });
+            }
+        });
+    });
+});
+
 // Run calibration benchmark
-ipcMain.handle('run-calibration', async () => {
+ipcMain.handle('run-calibration', async (_event, useGpu = false) => {
     const binaryPath = getRustBinaryPath();
     if (!fs.existsSync(binaryPath)) {
         return { error: `Rust binary not found: ${binaryPath}` };
@@ -63,16 +123,21 @@ ipcMain.handle('run-calibration', async () => {
     const calOutput = path.join(app.getPath('temp'), 'rt_calibration.png');
     const startTime = Date.now();
 
+    const args = [
+        '--width', '160',
+        '--height', '90',
+        '--samples', '16',
+        '--max-depth', '5',
+        '--output', calOutput,
+        '--seed', '0',
+        '--json',
+    ];
+    if (useGpu) {
+        args.push('--gpu');
+    }
+
     return new Promise((resolve) => {
-        const child = spawn(binaryPath, [
-            '--width', '160',
-            '--height', '90',
-            '--samples', '16',
-            '--max-depth', '5',
-            '--output', calOutput,
-            '--seed', '0',
-            '--json',
-        ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawn(binaryPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
         child.on('close', (code) => {
             const elapsedMs = Date.now() - startTime;
@@ -82,12 +147,14 @@ ipcMain.handle('run-calibration', async () => {
                 const calibration = {
                     pixel_samples_per_ms: Math.round(pixelSamplesPerMs * 100) / 100,
                     calibrated_at: new Date().toISOString(),
+                    gpu: useGpu,
                 };
-                fs.writeFileSync(getCalibrationPath(), JSON.stringify(calibration, null, 2));
+                const calPath = useGpu ? getGpuCalibrationPath() : getCalibrationPath();
+                fs.writeFileSync(calPath, JSON.stringify(calibration, null, 2));
                 try { fs.unlinkSync(calOutput); } catch (_) {}
                 resolve(calibration);
             } else {
-                resolve({ error: `性能校准失败（退出码: ${code}），将使用默认估算值`, fallback: 200 });
+                resolve({ error: `Calibration failed (exit code: ${code}), using default estimate`, fallback: useGpu ? 10000 : 200 });
             }
         });
     });
@@ -96,12 +163,12 @@ ipcMain.handle('run-calibration', async () => {
 // Start render
 ipcMain.handle('start-render', async (_event, config) => {
     if (renderProcess) {
-        return { error: '已有渲染任务正在进行中，请等待当前任务完成或取消后再试' };
+        return { error: 'A render is already in progress. Please wait or cancel it.' };
     }
 
     const binaryPath = getRustBinaryPath();
     if (!fs.existsSync(binaryPath)) {
-        return { error: `找不到渲染引擎程序: ${binaryPath}\n请先运行: cargo build --release` };
+        return { error: `Renderer binary not found: ${binaryPath}\nPlease build first: cargo build --release` };
     }
 
     const outputPath = config.output || path.join(app.getPath('temp'), 'rt_render_output.png');
@@ -115,6 +182,12 @@ ipcMain.handle('start-render', async (_event, config) => {
     ];
     if (config.seed !== undefined && config.seed !== null && config.seed !== '') {
         args.push('--seed', String(config.seed));
+    }
+    if (config.gpu) {
+        args.push('--gpu');
+    }
+    if (config.denoise) {
+        args.push('--denoise');
     }
 
     return new Promise((resolve) => {
@@ -161,7 +234,7 @@ ipcMain.handle('start-render', async (_event, config) => {
 
         renderProcess.on('error', (err) => {
             renderProcess = null;
-            resolve({ error: `启动渲染引擎失败: ${err.message}` });
+            resolve({ error: `Failed to start renderer: ${err.message}` });
         });
 
         renderProcess.on('close', (code) => {
@@ -174,13 +247,13 @@ ipcMain.handle('start-render', async (_event, config) => {
                     });
                 } else {
                     const errDetail = stderrLines.length > 0
-                        ? '\n引擎输出:\n' + stderrLines.slice(-10).join('\n')
+                        ? '\nEngine output:\n' + stderrLines.slice(-10).join('\n')
                         : '';
-                    const exitMsg = code === null || code === null
-                        ? '渲染进程被信号终止'
-                        : `渲染引擎异常退出（退出码: ${code}）`;
+                    const exitMsg = code === null
+                        ? 'Render process terminated by signal'
+                        : `Renderer exited abnormally (exit code: ${code})`;
                     mainWindow.webContents.send('render-error', {
-                        message: exitMsg + '\n请检查分辨率、采样数等参数是否过大导致内存不足' + errDetail,
+                        message: exitMsg + '\nCheck resolution, samples, or available memory.' + errDetail,
                     });
                 }
             }
@@ -195,7 +268,7 @@ ipcMain.on('cancel-render', () => {
         renderProcess.kill();
         renderProcess = null;
         if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('render-error', { message: '渲染已被用户取消' });
+            mainWindow.webContents.send('render-error', { message: 'Render cancelled by user' });
         }
     }
 });
@@ -209,6 +282,6 @@ ipcMain.handle('get-image-data', async (_event, imagePath) => {
         const base64 = data.toString('base64');
         return { dataUrl: `data:${mime};base64,${base64}` };
     } catch (err) {
-        return { error: `读取渲染结果图片失败: ${err.message}` };
+        return { error: `Failed to read rendered image: ${err.message}` };
     }
 });
