@@ -1,6 +1,6 @@
 [package]
 name = "rt-next-week"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 
 [dependencies]
@@ -19,5 +19,5 @@ default = []
 cuda = []
 
 [profile.release]
-lto = true
-codegen-units = 1
+codegen-units = 16
+lto = false
