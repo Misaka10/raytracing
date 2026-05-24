@@ -11,7 +11,7 @@ cargo build --release
 # GPU (requires CUDA 13.1 + OptiX 9.1.0 SDK)
 cargo build --release --features cuda
 
-# GPU diagnostics
+# GPU diagnostics (JSON: driver version, CC, VRAM, OptiX status)
 .\target\release\rt-next-week.exe --check-gpu
 
 # Run all tests
@@ -21,7 +21,40 @@ cargo test --features cuda
 cargo test --lib cuda::scene::tests --features cuda
 ```
 
-Build script (`build.rs`) compiles `.cu` shaders to PTX via NVCC then patches PTX ISA 9.1 → 8.5 for OptiX 9.x compatibility.
+Build script (`build.rs`) compiles 3 `.cu` shaders to PTX **in parallel** via `std::thread::scope` + NVCC, then patches PTX ISA 9.1 → 8.5 for OptiX 9.x compatibility. `.cargo/config.toml` sets `codegen-units=16` for parallel rustc backend with `lto=false` to avoid serial link bottleneck.
+
+### Electron packaging
+
+```sh
+cd electron
+npm install
+
+# Rebuild full Electron portable package
+npm run dist
+
+# Quick fix: repack only app.asar (frontend changes)
+npx asar extract "RT Renderer 2.0.1 GPU Portable/resources/app.asar" app-src/
+# ... edit files in app-src/ ...
+npx asar pack app-src resources/app.asar
+# Then update resources/rt-next-week.exe and resources/app.asar in ZIP
+```
+
+### --check-gpu JSON output
+
+```json
+{
+  "status": "ok",
+  "cuda": {
+    "available": true, "device_name": "NVIDIA GeForce RTX 5080",
+    "driver_version": "13.2", "compute_capability": "12.0",
+    "vram_mb": 16302, "device_count": 1,
+    "warnings": null, "error": null
+  },
+  "optix": { "available": true, "device_name": "...", "error": null }
+}
+```
+
+Automatic warnings: driver < R560, compute capability < 7.5.
 
 ## Architecture
 
@@ -76,7 +109,7 @@ src/
 
 ### GPU rendering pipeline
 
-- **Ray gen**: Stratified samples, path tracing loop with MIS (50/50 BRDF + light/sphere sampling), Russian roulette
+- **Ray gen**: Stratified samples, path tracing loop with MIS (50/50 BRDF + light/sphere sampling), full recursion (no Russian roulette, matching CPU)
 - **Closest hit**: Barycentric normal interpolation from per-vertex normals (smooth spheres + flat quads)
 - **Miss**: Returns background color
 - **Denoiser**: OptiX AI HDR denoiser (Tensor Core), post-render pass
@@ -100,12 +133,13 @@ src/
 
 - CPU `lights` list has: light quad + glass sphere (empty material for direction sampling)
 - GPU matches this: light quad via `find_light_quad` + sphere via `find_glass_sphere`
-- In raygen strategy 2: 50% light rectangle / 50% sphere direction sampling
-- Sphere PDF value = 0 (CPU sphere has no pdf_value override)
+- In raygen strategy 2: 50% light rectangle / 50% sphere solid-angle sampling (matching `random_to_sphere`)
+- Sphere PDF value = `1.0 / solid_angle` (matching CPU `sphere.pdf_value()`)
+- Sphere solid-angle sampling uses ONB toward sphere center with z in `[cos_theta_max, 1]`
 
 ## Testing
 
-86 unit tests across all modules. Key tests:
+88 unit tests across all modules. Key tests:
 - `cuda::scene::tests::test_box_with_transform_not_empty` — Regressed: HittableList silently dropped in tessellation
 - `cuda::scene::tests::test_sphere_vertex_normals_*` — Normals are unit length, correct direction
 - `cuda::scene::tests::test_gpu_material_size` — 36 bytes (matches GPU GpuMaterialData)
