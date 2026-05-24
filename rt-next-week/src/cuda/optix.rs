@@ -100,6 +100,8 @@ extern "C" {
     ) -> bool;
 
     fn optix_bridge_get_error(bridge: *const std::ffi::c_void) -> *const c_char;
+
+    fn optix_bridge_denoise(bridge: *mut std::ffi::c_void) -> bool;
 }
 
 impl OptiXBridge {
@@ -198,6 +200,11 @@ impl OptiXBridge {
                     .into_owned()
             }
         }
+    }
+
+    /// Apply AI denoiser (Tensor Core accelerated) to the last rendered frame.
+    pub fn denoise(&mut self) -> bool {
+        unsafe { optix_bridge_denoise(self._private) }
     }
 }
 
