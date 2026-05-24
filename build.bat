@@ -53,7 +53,8 @@ cd ..
 echo.
 echo ============================================
 echo  Build complete!
-echo  Output: electron\dist\RT Renderer 1.0.0.exe
+echo  Output: dist-pkg\win-unpacked\RT Renderer.exe
+echo  Portable zip: "RT Renderer 2.0.0 GPU Portable.zip"
 echo.
 if %BUILD_GPU%==1 (
     echo  GPU mode: ENABLED (OptiX RT Core + Tensor Core)
