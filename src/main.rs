@@ -42,6 +42,12 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    // 初始化 rayon 线程池，增大栈空间防止递归 ray_color 爆栈
+    rayon::ThreadPoolBuilder::new()
+        .stack_size(16 * 1024 * 1024)
+        .build_global()
+        .unwrap_or_else(|_| {});
+
     let mut world = HittableList::new();
 
     let red = Material::lambertian_color(Color::new(0.65, 0.05, 0.05));
