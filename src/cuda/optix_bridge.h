@@ -47,7 +47,8 @@ bool optix_bridge_build_accel(
     OptiXBridge* bridge,
     const float* vertices,
     const unsigned int* indices,
-    int tri_count
+    int tri_count,
+    int vertex_count
 );
 
 /* Create the OptiX pipeline (raygen + closesthit + miss).
