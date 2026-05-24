@@ -85,12 +85,13 @@ __device__ inline ScatterResult scatter_metal(
     ScatterResult sr;
     sr.attenuation = albedo;
     GpuFloat3 reflected = vec_reflect(vec_normalize(ray_dir), normal);
+    reflected = vec_normalize(reflected);  // match CPU: reflect().unit_vector()
     GpuFloat3 fuzz_dir = scl_mul(fuzz, random_unit_sphere_direction(rng));
-    sr.skip_ray_dir = vec_normalize(vec_add(reflected, fuzz_dir));
+    sr.skip_ray_dir = vec_add(reflected, fuzz_dir);  // CPU does NOT normalize here
     sr.skip_pdf = true;
     sr.scattered_dir = {0,0,0};
     sr.pdf_value = 0.0f;
-    sr.absorbed = vec_dot(sr.skip_ray_dir, normal) <= 0.0f;
+    sr.absorbed = vec_dot(vec_normalize(sr.skip_ray_dir), normal) <= 0.0f;
     return sr;
 }
 
