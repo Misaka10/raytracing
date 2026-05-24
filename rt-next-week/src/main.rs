@@ -11,33 +11,24 @@ use rt_next_week::{Hittable, HittableList};
 #[command(name = "rt-next-week")]
 #[command(about = "Physically based Monte Carlo path tracer (Rust port)")]
 struct Args {
-    #[arg(long, default_value = "600")]
+    #[arg(long, default_value = "3840")]
     width: u32,
 
     /// 图像高度（0 = 从宽高比自动推导）
-    #[arg(long, default_value = "0")]
+    #[arg(long, default_value = "2160")]
     height: u32,
 
-    /// 宽高比 width/height（仅在未指定 height 时使用）
-    #[arg(long, default_value = "1.0")]
+    #[arg(long, default_value = "1.777")]
     aspect_ratio: f64,
 
-    #[arg(long, default_value = "100")]
+    #[arg(long, default_value = "400")]
     samples: u32,
 
-    #[arg(long, default_value = "50")]
+    #[arg(long, default_value = "75")]
     max_depth: u32,
 
     #[arg(long, default_value = "output.png")]
     output: String,
-
-    /// 启用中值滤波降噪
-    #[arg(long)]
-    denoise: bool,
-
-    /// 降噪滤波器半径（1=3x3, 2=5x5）
-    #[arg(long, default_value = "1")]
-    denoise_radius: u32,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -113,13 +104,7 @@ fn main() -> anyhow::Result<()> {
     let world_hittable = Hittable::HittableList(world);
     let lights_hittable = Hittable::HittableList(lights);
 
-    let denoise_config = if args.denoise {
-        rt_next_week::denoise::DenoiseConfig::median(args.denoise_radius)
-    } else {
-        rt_next_week::denoise::DenoiseConfig::disabled()
-    };
-
-    cam.render(&world_hittable, &lights_hittable, &args.output, &denoise_config)?;
+    cam.render(&world_hittable, &lights_hittable, &args.output)?;
 
     Ok(())
 }

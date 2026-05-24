@@ -122,7 +122,7 @@ impl Camera {
         Ray::new(ray_origin, ray_direction, ray_time)
     }
 
-    pub fn render(&self, world: &Hittable, lights: &Hittable, output_path: &str, denoise_config: &crate::denoise::DenoiseConfig) -> anyhow::Result<()> {
+    pub fn render(&self, world: &Hittable, lights: &Hittable, output_path: &str) -> anyhow::Result<()> {
         let lights_list = match lights {
             Hittable::HittableList(l) => l,
             _ => anyhow::bail!("lights must be HittableList"),
@@ -144,7 +144,7 @@ impl Camera {
 
         let counter = AtomicUsize::new(0);
 
-        let mut pixel_data: Vec<[u16; 3]> = (0..h)
+        let pixel_data: Vec<[u16; 3]> = (0..h)
             .into_par_iter()
             .flat_map(|j| {
                 let mut row_data: Vec<[u16; 3]> = Vec::with_capacity(w);
@@ -169,19 +169,6 @@ impl Camera {
             .collect();
 
         pb.finish_with_message("Done.");
-
-        if denoise_config.enabled {
-            println!(
-                "Denoising with median filter (radius={})...",
-                denoise_config.radius
-            );
-            crate::denoise::median_filter(
-                &mut pixel_data,
-                w as u32,
-                h as u32,
-                denoise_config.radius,
-            );
-        }
 
         save_png(output_path, w as u32, h as u32, &pixel_data)?;
         println!("Wrote {}", output_path);
