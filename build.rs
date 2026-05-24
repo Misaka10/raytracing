@@ -48,10 +48,13 @@ fn find_optix_sdk() -> Option<PathBuf> {
     }
 
     let candidates = [
+        "C:/optix-sdk-9.1.0",
+        "C:/ProgramData/NVIDIA Corporation/OptiX SDK 9.1",
+        "C:/ProgramData/NVIDIA Corporation/OptiX SDK 9.0",
         "C:/ProgramData/NVIDIA Corporation/OptiX SDK 8.1",
         "C:/ProgramData/NVIDIA Corporation/OptiX SDK 8.0",
+        "C:/Program Files/NVIDIA Corporation/OptiX SDK 9.1",
         "C:/Program Files/NVIDIA Corporation/OptiX SDK 8.1",
-        "C:/Program Files/NVIDIA Corporation/OptiX SDK 8.0",
     ];
 
     for c in &candidates {
@@ -76,6 +79,39 @@ fn find_optix_sdk() -> Option<PathBuf> {
         }
     }
 
+    None
+}
+
+fn find_msvc_bin_dir() -> Option<PathBuf> {
+    // Search VS 2022 Community/Professional/Enterprise/BuildTools
+    let vs_base = Path::new("C:/Program Files/Microsoft Visual Studio/2022");
+    let vs_base_x86 = Path::new("C:/Program Files (x86)/Microsoft Visual Studio/2022");
+
+    for base in [vs_base, vs_base_x86] {
+        if !base.exists() { continue; }
+        for edition in &["Community", "Professional", "Enterprise", "BuildTools"] {
+            let msvc_dir = base.join(edition).join("VC").join("Tools").join("MSVC");
+            if !msvc_dir.exists() { continue; }
+            if let Ok(entries) = std::fs::read_dir(&msvc_dir) {
+                let mut versions: Vec<_> = entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                    .collect();
+                versions.sort_by_key(|e| e.file_name());
+                versions.reverse();
+                for v in versions {
+                    let cl = v.path()
+                        .join("bin")
+                        .join("Hostx64")
+                        .join("x64")
+                        .join("cl.exe");
+                    if cl.exists() {
+                        return Some(v.path().join("bin").join("Hostx64").join("x64"));
+                    }
+                }
+            }
+        }
+    }
     None
 }
 
@@ -183,9 +219,18 @@ fn main() {
     let optix_include = optix_path.join("include");
     let cuda_include = cuda_path.join("include");
 
+    // Find MSVC host compiler for NVCC
+    let msvc_bin = find_msvc_bin_dir().unwrap_or_else(|| {
+        eprintln!("ERROR: MSVC host compiler (cl.exe) not found.");
+        eprintln!("  Install Visual Studio 2022 with 'Desktop development with C++' workload.");
+        eprintln!("  Or set VSINSTALLDIR environment variable.");
+        std::process::exit(1);
+    });
+
     eprintln!("[build.rs] NVCC:  {}", nvcc.display());
     eprintln!("[build.rs] CUDA:  {}", cuda_path.display());
     eprintln!("[build.rs] OptiX: {}", optix_path.display());
+    eprintln!("[build.rs] MSVC:  {}", msvc_bin.display());
 
     // --- Compile shader .cu files to .ptx ---
     let shaders = ["raygen.cu", "closesthit.cu", "miss.cu"];
@@ -198,8 +243,9 @@ fn main() {
 
         let status = Command::new(&nvcc)
             .arg("-ptx")
-            .arg("--use-fast-math")
+            .arg("--use_fast_math")
             .arg("-lineinfo")
+            .arg(format!("-ccbin={}", msvc_bin.display()))
             .arg(format!("-I{}", optix_include.display()))
             .arg(format!("-I{}", shader_dir.display()))
             .arg("-o").arg(&output)
@@ -223,8 +269,9 @@ fn main() {
 
     let status = Command::new(&nvcc)
         .arg("-c")
-        .arg("--use-fast-math")
+        .arg("--use_fast_math")
         .arg("-lineinfo")
+        .arg(format!("-ccbin={}", msvc_bin.display()))
         .arg(format!("-I{}", optix_include.display()))
         .arg(format!("-I{}", cuda_include.display()))
         .arg("-o").arg(&bridge_obj)
@@ -253,21 +300,18 @@ fn main() {
     }
 
     // --- Emit cargo link directives ---
+    // Note: OptiX 9.x runtime is part of the NVIDIA driver — no separate optix.lib needed.
+    // The function table is populated by optixInit() at runtime via optix_stubs.h.
     let lib_dir = out_dir.to_string_lossy().to_string();
     println!("cargo:rustc-link-search=native={}", lib_dir);
     println!("cargo:rustc-link-lib=static=optix_bridge");
-
-    let optix_lib_dir = optix_path.join("lib");
-    if optix_lib_dir.exists() {
-        println!("cargo:rustc-link-search=native={}", optix_lib_dir.display());
-    }
-    println!("cargo:rustc-link-lib=optix");
 
     let cuda_lib_dir = cuda_path.join("lib").join("x64");
     if cuda_lib_dir.exists() {
         println!("cargo:rustc-link-search=native={}", cuda_lib_dir.display());
     }
     println!("cargo:rustc-link-lib=cudart");
+    println!("cargo:rustc-link-lib=cuda"); // CUDA driver API (cuInit, cuCtxCreate, etc.)
 
-    eprintln!("[build.rs] GPU build complete.");
+    eprintln!("[build.rs] GPU build complete. Bridge lib + shader PTX ready.");
 }
