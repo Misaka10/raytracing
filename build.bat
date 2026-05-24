@@ -10,7 +10,7 @@ set BUILD_GPU=0
 if "%1"=="--gpu" set BUILD_GPU=1
 if "%1"=="-g" set BUILD_GPU=1
 
-echo [1/4] Building Rust path tracer (release)...
+echo [1/3] Building Rust path tracer (release)...
 cargo build --release
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR: Rust build failed!
@@ -20,7 +20,7 @@ if %ERRORLEVEL% NEQ 0 (
 
 if %BUILD_GPU%==1 (
     echo.
-    echo [2/4] Building Rust path tracer with CUDA (GPU release)...
+    echo [2/3] Building Rust path tracer with CUDA (GPU release)...
     cargo build --release --features cuda
     if %ERRORLEVEL% NEQ 0 (
         echo WARNING: GPU build failed. CPU binary will work, GPU mode disabled.
@@ -30,12 +30,7 @@ if %BUILD_GPU%==1 (
 )
 
 echo.
-echo [3/4] Copying executable to project root...
-copy /Y target\release\rt-next-week.exe . >nul
-echo       Done.
-
-echo.
-echo [4/4] Packaging Electron app...
+echo [3/3] Packaging Electron app...
 cd electron
 if not exist "node_modules\" (
     echo       Installing npm dependencies...
@@ -53,8 +48,8 @@ cd ..
 echo.
 echo ============================================
 echo  Build complete!
-echo  Output: dist-pkg\win-unpacked\RT Renderer.exe
-echo  Portable zip: "RT Renderer 2.0.0 GPU Portable.zip"
+echo  Output: electron\dist-pkg\win-unpacked\RT Renderer.exe
+echo  Portable zip: electron\dist-pkg\ (see electron-builder output for filename)
 echo.
 if %BUILD_GPU%==1 (
     echo  GPU mode: ENABLED (OptiX RT Core + Tensor Core)
