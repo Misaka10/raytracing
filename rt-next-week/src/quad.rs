@@ -75,3 +75,71 @@ impl Quad {
         p - *origin
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quad_hit_center() {
+        let q = Quad::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+            Material::lambertian_color(Vec3::zero()),
+        );
+        let r = Ray::new(Point3::new(1.0, 1.0, -1.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let mut rec = HitRecord {
+            p: Point3::zero(), normal: Vec3::zero(), mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+        };
+        assert!(q.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
+        assert!((rec.t - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_quad_miss_parallel() {
+        let q = Quad::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+            Material::lambertian_color(Vec3::zero()),
+        );
+        let r = Ray::new(Point3::new(1.0, 1.0, -1.0), Vec3::new(1.0, 0.0, 0.0), 0.0);
+        let mut rec = HitRecord {
+            p: Point3::zero(), normal: Vec3::zero(), mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+        };
+        assert!(!q.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
+    }
+
+    #[test]
+    fn test_quad_outside_bounds() {
+        let q = Quad::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+            Material::lambertian_color(Vec3::zero()),
+        );
+        let r = Ray::new(Point3::new(3.0, 3.0, -1.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let mut rec = HitRecord {
+            p: Point3::zero(), normal: Vec3::zero(), mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+        };
+        assert!(!q.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
+    }
+
+    #[test]
+    fn test_quad_pdf_value() {
+        let q = Quad::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+            Material::lambertian_color(Vec3::zero()),
+        );
+        let origin = Point3::new(1.0, 1.0, -1.0);
+        let dir = Vec3::new(0.0, 0.0, 1.0);
+        let pdf = q.pdf_value(&origin, &dir);
+        assert!(pdf > 0.0, "pdf should be > 0 for a ray that hits, got {}", pdf);
+    }
+}

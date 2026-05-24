@@ -162,3 +162,146 @@ pub fn random_cosine_direction<R: Rng>(rng: &mut R) -> Vec3 {
     let z = (1.0 - r2).sqrt();
     Vec3::new(x, y, z)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
+    #[test]
+    fn test_add() {
+        let a = Vec3::new(1.0, 2.0, 3.0);
+        let b = Vec3::new(4.0, 5.0, 6.0);
+        let c = a + b;
+        assert_eq!(c.e, [5.0, 7.0, 9.0]);
+    }
+
+    #[test]
+    fn test_sub() {
+        let a = Vec3::new(5.0, 7.0, 9.0);
+        let b = Vec3::new(1.0, 2.0, 3.0);
+        let c = a - b;
+        assert_eq!(c.e, [4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn test_mul_f64() {
+        let a = Vec3::new(1.0, 2.0, 3.0);
+        let b = a * 2.0;
+        assert_eq!(b.e, [2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn test_div_f64() {
+        let a = Vec3::new(2.0, 4.0, 6.0);
+        let b = a / 2.0;
+        assert_eq!(b.e, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_dot() {
+        let a = Vec3::new(1.0, 0.0, 0.0);
+        let b = Vec3::new(0.0, 1.0, 0.0);
+        assert_eq!(a.dot(&b), 0.0);
+        assert_eq!(a.dot(&a), 1.0);
+    }
+
+    #[test]
+    fn test_cross() {
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        let y = Vec3::new(0.0, 1.0, 0.0);
+        let z = x.cross(&y);
+        assert_eq!(z.e, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_length() {
+        let v = Vec3::new(3.0, 4.0, 0.0);
+        assert!((v.length() - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_unit_vector() {
+        let v = Vec3::new(3.0, 0.0, 0.0);
+        let u = v.unit_vector();
+        assert!((u.x() - 1.0).abs() < 1e-10);
+        assert!(u.y().abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_near_zero() {
+        assert!(Vec3::new(1e-9, 1e-9, 1e-9).near_zero());
+        assert!(!Vec3::new(1.0, 0.0, 0.0).near_zero());
+    }
+
+    #[test]
+    fn test_reflect() {
+        let v = Vec3::new(1.0, -1.0, 0.0);
+        let n = Vec3::new(0.0, 1.0, 0.0);
+        let r = reflect(&v, &n);
+        assert!((r.x() - 1.0).abs() < 1e-10);
+        assert!((r.y() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_refract_basic() {
+        let uv = Vec3::new(0.0, -1.0, 0.0);
+        let n = Vec3::new(0.0, 1.0, 0.0);
+        let r = refract(&uv, &n, 1.0);
+        assert!((r.y() + 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_neg() {
+        let v = Vec3::new(1.0, -2.0, 3.0);
+        let n = -v;
+        assert_eq!(n.e, [-1.0, 2.0, -3.0]);
+    }
+
+    #[test]
+    fn test_add_assign() {
+        let mut v = Vec3::new(1.0, 2.0, 3.0);
+        v += Vec3::new(4.0, 5.0, 6.0);
+        assert_eq!(v.e, [5.0, 7.0, 9.0]);
+    }
+
+    #[test]
+    fn test_random_unit_vector() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        for _ in 0..100 {
+            let v = random_unit_vector(&mut rng);
+            assert!((v.length() - 1.0).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_random_in_unit_disk() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        for _ in 0..100 {
+            let p = random_in_unit_disk(&mut rng);
+            assert!(p.z().abs() < 1e-10);
+            assert!(p.length_squared() < 1.0);
+        }
+    }
+
+    #[test]
+    fn test_random_on_hemisphere() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let normal = Vec3::new(0.0, 1.0, 0.0);
+        for _ in 0..100 {
+            let v = random_on_hemisphere(&normal, &mut rng);
+            assert!(v.dot(&normal) > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_random_cosine_direction() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        for _ in 0..100 {
+            let v = random_cosine_direction(&mut rng);
+            assert!((v.length() - 1.0).abs() < 1e-8);
+            assert!(v.z() >= 0.0);
+        }
+    }
+}

@@ -93,7 +93,7 @@ fn main() -> anyhow::Result<()> {
     cam.defocus_angle = 0.0;
     cam.initialize();
 
-    let world_hittable = Hittable::HittableList(world.clone());
+    let world_hittable = Hittable::HittableList(world);
     let lights_hittable = Hittable::HittableList(lights);
 
     cam.render(&world_hittable, &lights_hittable, &args.output)?;
