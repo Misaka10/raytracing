@@ -17,6 +17,7 @@ pub mod constant_medium;
 pub mod pdf;
 pub mod material;
 pub mod camera;
+pub mod denoise;
 
 pub use hittable::Hittable;
 pub use hittable_list::HittableList;
