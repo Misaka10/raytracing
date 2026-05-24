@@ -21,12 +21,19 @@ const progressSection = $('#progress-section');
 const progressBar = $('#progress-bar');
 const progressPercent = $('#progress-percent');
 const progressEta = $('#progress-eta');
+const gpuStatus = $('#gpu-status');
+const denoiseRow = $('#denoise-row');
+const denoiseCheck = $('#denoise');
+const gpuLabel = $('#gpu-label');
+const cpuRadio = document.querySelector('input[name="renderer"][value="cpu"]');
+const gpuRadio = document.querySelector('input[name="renderer"][value="gpu"]');
 
 // State
-let calibration = null;
+let calibration = null;       // CPU calibration
+let gpuCalibration = null;    // GPU calibration
+let gpuAvailable = false;
 let renderStartTime = null;
 let isRendering = false;
-let svgDataUrl = null;
 
 // Aspect ratio helpers
 function getAspectRatio() {
@@ -39,6 +46,10 @@ function calcHeight(width, ratio) {
 
 function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
+}
+
+function isGpuMode() {
+    return gpuRadio.checked;
 }
 
 // Update height when width or aspect changes
@@ -64,13 +75,14 @@ function updateEstimates() {
     }
 
     // Time estimate
-    if (calibration && calibration.pixel_samples_per_ms) {
+    const cal = isGpuMode() ? gpuCalibration : calibration;
+    if (cal && cal.pixel_samples_per_ms) {
         const pixelSamples = w * h * spp;
-        const ms = pixelSamples / calibration.pixel_samples_per_ms;
+        const ms = pixelSamples / cal.pixel_samples_per_ms;
         timeVal.textContent = formatDuration(ms);
-        if (ms > 7200000) { // > 2 hours
+        if (ms > 7200000) {
             timeVal.className = 'estimate-value warning-red';
-        } else if (ms > 1800000) { // > 30 minutes
+        } else if (ms > 1800000) {
             timeVal.className = 'estimate-value warning-yellow';
         } else {
             timeVal.className = 'estimate-value';
@@ -90,6 +102,19 @@ function formatDuration(ms) {
     if (hrs > 0) return `~${hrs}h ${remainMins}m`;
     return `~${mins}m`;
 }
+
+// Event: Renderer mode switch
+cpuRadio.addEventListener('change', () => {
+    denoiseRow.style.display = 'none';
+    updateEstimates();
+});
+
+gpuRadio.addEventListener('change', () => {
+    if (gpuAvailable) {
+        denoiseRow.style.display = 'block';
+    }
+    updateEstimates();
+});
 
 // Event: width preset
 widthSelect.addEventListener('change', () => {
@@ -159,6 +184,8 @@ btnStart.addEventListener('click', async () => {
     const maxDepth = parseInt(depthSlider.value) || 75;
     const seedRaw = seedInput.value.trim();
     const seed = seedRaw !== '' ? parseInt(seedRaw, 10) : undefined;
+    const gpu = isGpuMode();
+    const denoise = gpu && denoiseCheck.checked;
 
     if (isNaN(width) || width < 10 || width > 16384) {
         showError('Width must be between 10 and 16384');
@@ -210,7 +237,7 @@ btnStart.addEventListener('click', async () => {
     window.electronAPI.onDone(async (msg) => {
         progressBar.style.width = '100%';
         progressPercent.textContent = '100%';
-        progressEta.textContent = '渲染完成';
+        progressEta.textContent = 'Done';
         setRenderingState(false);
 
         if (msg.output) {
@@ -225,7 +252,7 @@ btnStart.addEventListener('click', async () => {
     // Listen for error
     window.electronAPI.onError((msg) => {
         setRenderingState(false);
-        showError(msg.message || '发生未知错误，请查看日志');
+        showError(msg.message || 'An unknown error occurred');
         progressSection.style.display = 'none';
     });
 
@@ -233,6 +260,8 @@ btnStart.addEventListener('click', async () => {
     const result = await window.electronAPI.startRender({
         width, height, samples, maxDepth, seed,
         output: '', // let backend pick temp path
+        gpu,
+        denoise,
     });
 
     if (result && result.error) {
@@ -261,6 +290,9 @@ function setRenderingState(rendering) {
     samplesSlider.disabled = rendering;
     depthSlider.disabled = rendering;
     seedInput.disabled = rendering;
+    cpuRadio.disabled = rendering;
+    gpuRadio.disabled = rendering;
+    denoiseCheck.disabled = rendering;
     document.querySelectorAll('.preset').forEach(b => b.disabled = rendering);
 }
 
@@ -280,32 +312,73 @@ function displayImage(dataUrl) {
     outputImage.src = dataUrl;
 }
 
+// GPU detection
+async function checkGpu() {
+    gpuStatus.style.display = 'block';
+    gpuStatus.textContent = 'Checking GPU...';
+    const result = await window.electronAPI.checkGpu();
+    if (result && result.available) {
+        gpuAvailable = true;
+        gpuStatus.textContent = 'OptiX RT Core GPU detected';
+        gpuStatus.className = 'hint gpu-ok';
+        gpuLabel.style.opacity = '1';
+    } else {
+        gpuAvailable = false;
+        gpuRadio.disabled = true;
+        gpuStatus.textContent = result ? (result.error || 'GPU not available') : 'GPU not available';
+        gpuStatus.className = 'hint gpu-error';
+        gpuLabel.style.opacity = '0.5';
+        gpuLabel.title = 'GPU unavailable — build with --features cuda or install CUDA driver';
+    }
+}
+
 // Load calibration on startup
 async function loadCalibration() {
     calStatus.textContent = 'Calibrating...';
-    const existing = await window.electronAPI.readCalibration?.();
+
+    // CPU calibration
+    const existing = await window.electronAPI.readCalibration();
     if (existing && existing.pixel_samples_per_ms) {
         calibration = existing;
-        calStatus.textContent = `Calibrated: ${calibration.pixel_samples_per_ms.toFixed(0)} px-samples/ms`;
-        updateEstimates();
-        return;
+    } else {
+        const result = await window.electronAPI.runCalibration(false);
+        if (result && result.pixel_samples_per_ms) {
+            calibration = result;
+        } else if (result && result.fallback) {
+            calibration = { pixel_samples_per_ms: result.fallback };
+        } else {
+            calibration = { pixel_samples_per_ms: 200 };
+        }
     }
 
-    // Run calibration
-    const result = await window.electronAPI.runCalibration();
-    if (result && result.pixel_samples_per_ms) {
-        calibration = result;
-        calStatus.textContent = `Calibrated: ${calibration.pixel_samples_per_ms.toFixed(0)} px-samples/ms`;
-    } else if (result && result.fallback) {
-        calibration = { pixel_samples_per_ms: result.fallback };
-        calStatus.textContent = 'Using fallback estimate';
+    // GPU calibration
+    if (gpuAvailable) {
+        const gpuExisting = await window.electronAPI.readGpuCalibration();
+        if (gpuExisting && gpuExisting.pixel_samples_per_ms) {
+            gpuCalibration = gpuExisting;
+        } else {
+            const gpuResult = await window.electronAPI.runCalibration(true);
+            if (gpuResult && gpuResult.pixel_samples_per_ms) {
+                gpuCalibration = gpuResult;
+            } else if (gpuResult && gpuResult.fallback) {
+                gpuCalibration = { pixel_samples_per_ms: gpuResult.fallback };
+            } else {
+                gpuCalibration = { pixel_samples_per_ms: 10000 };
+            }
+        }
+    }
+
+    // Show calibration info
+    const cpuSpeed = calibration ? calibration.pixel_samples_per_ms.toFixed(0) : '?';
+    if (gpuCalibration && gpuCalibration.pixel_samples_per_ms) {
+        const gpuSpeed = gpuCalibration.pixel_samples_per_ms.toFixed(0);
+        calStatus.textContent = `CPU: ${cpuSpeed} px-ms/s | GPU: ${gpuSpeed} px-ms/s`;
     } else {
-        calibration = { pixel_samples_per_ms: 200 };
-        calStatus.textContent = 'Using default estimate (no binary found)';
+        calStatus.textContent = `Calibrated: ${cpuSpeed} px-samples/ms`;
     }
     updateEstimates();
 }
 
 // Init
+checkGpu().then(() => loadCalibration());
 updateEstimates();
-loadCalibration();

@@ -16,7 +16,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('render-log', (_event, msg) => callback(msg));
     },
     getImageData: (path) => ipcRenderer.invoke('get-image-data', path),
-    runCalibration: () => ipcRenderer.invoke('run-calibration'),
+    runCalibration: (useGpu) => ipcRenderer.invoke('run-calibration', useGpu),
+    checkGpu: () => ipcRenderer.invoke('check-gpu'),
+    readCalibration: () => ipcRenderer.invoke('read-calibration'),
+    readGpuCalibration: () => ipcRenderer.invoke('read-gpu-calibration'),
     removeAllListeners: () => {
         ipcRenderer.removeAllListeners('render-progress');
         ipcRenderer.removeAllListeners('render-done');

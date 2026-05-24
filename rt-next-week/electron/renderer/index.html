@@ -15,6 +15,27 @@
             <p class="subtitle">Monte Carlo Path Tracer</p>
 
             <div class="section">
+                <h2>Renderer</h2>
+                <div class="radio-group" id="renderer-mode">
+                    <label class="radio-label">
+                        <input type="radio" name="renderer" value="cpu" checked>
+                        <span>CPU (rayon)</span>
+                    </label>
+                    <label class="radio-label" id="gpu-label">
+                        <input type="radio" name="renderer" value="gpu">
+                        <span>GPU (OptiX RT Core)</span>
+                    </label>
+                </div>
+                <div id="gpu-status" class="hint" style="display:none;"></div>
+                <div class="checkbox-row" id="denoise-row" style="display:none;">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="denoise">
+                        <span>AI Denoise (Tensor Core)</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="section">
                 <h2>Resolution</h2>
                 <div class="field">
                     <label for="width">Width</label>
