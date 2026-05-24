@@ -101,6 +101,8 @@ extern "C" {
 
     fn optix_bridge_get_error(bridge: *const std::ffi::c_void) -> *const c_char;
 
+    fn optix_bridge_get_device_name(bridge: *const std::ffi::c_void) -> *const c_char;
+
     fn optix_bridge_denoise(bridge: *mut std::ffi::c_void) -> bool;
 }
 
@@ -202,6 +204,19 @@ impl OptiXBridge {
         }
     }
 
+    /// Get the CUDA device name. Returns empty string if not initialized.
+    pub fn get_device_name(&self) -> &str {
+        unsafe {
+            let ptr = optix_bridge_get_device_name(self._private);
+            if ptr.is_null() {
+                return "";
+            }
+            std::ffi::CStr::from_ptr(ptr)
+                .to_str()
+                .unwrap_or("")
+        }
+    }
+
     /// Apply AI denoiser (Tensor Core accelerated) to the last rendered frame.
     pub fn denoise(&mut self) -> bool {
         unsafe { optix_bridge_denoise(self._private) }
@@ -217,6 +232,134 @@ impl Drop for OptiXBridge {
 // Safety: OptiXBridge is not Send/Sync by default since it holds CUDA context.
 // However, our usage pattern is single-threaded for GPU operations.
 unsafe impl Send for OptiXBridge {}
+
+// ============================================================================
+// GPU Diagnostics (for --check-gpu)
+// ============================================================================
+
+/// Probe CUDA driver directly (fast, no OptiX dependency).
+/// Uses raw CUDA Driver API — symbols provided by cuda.lib (linked by build.rs).
+fn cuda_driver_probe() -> serde_json::Value {
+    extern "C" {
+        fn cuInit(flags: u32) -> i32;
+        fn cuDeviceGetCount(count: *mut i32) -> i32;
+        fn cuDeviceGet(device: *mut i32, ordinal: i32) -> i32;
+        fn cuDeviceGetName(name: *mut std::ffi::c_char, len: i32, dev: i32) -> i32;
+    }
+
+    unsafe {
+        if cuInit(0) != 0 {
+            return serde_json::json!({
+                "available": false,
+                "device_name": null,
+                "error": "cuInit failed: CUDA driver not installed or too old"
+            });
+        }
+
+        let mut count: i32 = 0;
+        if cuDeviceGetCount(&mut count) != 0 {
+            return serde_json::json!({
+                "available": false,
+                "device_name": null,
+                "error": "cuDeviceGetCount failed"
+            });
+        }
+        if count == 0 {
+            return serde_json::json!({
+                "available": false,
+                "device_name": null,
+                "error": "No CUDA-capable devices found (count=0)"
+            });
+        }
+
+        let mut device: i32 = 0;
+        if cuDeviceGet(&mut device, 0) != 0 {
+            return serde_json::json!({
+                "available": false,
+                "device_name": null,
+                "error": "cuDeviceGet failed"
+            });
+        }
+
+        let mut name_buf = [0i8; 256];
+        if cuDeviceGetName(name_buf.as_mut_ptr() as *mut std::ffi::c_char, 256, device) != 0 {
+            return serde_json::json!({
+                "available": true,
+                "device_name": null,
+                "error": "cuDeviceGetName failed"
+            });
+        }
+
+        let name = std::ffi::CStr::from_ptr(name_buf.as_ptr())
+            .to_string_lossy()
+            .into_owned();
+
+        serde_json::json!({
+            "available": true,
+            "device_name": name,
+            "error": null
+        })
+    }
+}
+
+/// Probe full OptiX bridge initialization with real shader PTX.
+fn optix_bridge_probe(device_name: Option<&str>) -> serde_json::Value {
+    let (ptx_r, ptx_c, ptx_m) = load_ptx_shaders();
+    match OptiXBridge::new(ptx_r, ptx_c, ptx_m) {
+        Some(bridge) => {
+            let name = bridge.get_device_name();
+            let name_str = if name.is_empty() { device_name.map(|s| s.to_string()) } else { Some(name.to_string()) };
+            serde_json::json!({
+                "available": true,
+                "device_name": name_str,
+                "error": null
+            })
+        }
+        None => {
+            serde_json::json!({
+                "available": false,
+                "device_name": device_name,
+                "error": "optixModuleCreate failed. This usually means PTX was compiled for a GPU architecture not supported by your driver, or OptiX SDK/driver version mismatch. Try rebuilding with --features cuda after updating CUDA toolkit and OptiX SDK."
+            })
+        }
+    }
+}
+
+/// Run GPU diagnostics: probe CUDA driver, get device info, test OptiX init.
+/// Prints JSON to stdout. Works even when OptiX cannot initialize.
+pub fn check_gpu_diagnostics() -> anyhow::Result<()> {
+    let cuda = cuda_driver_probe();
+    let cuda_available = cuda["available"].as_bool().unwrap_or(false);
+    let cuda_device = cuda["device_name"].as_str();
+
+    let optix = if cuda_available {
+        optix_bridge_probe(cuda_device)
+    } else {
+        serde_json::json!({
+            "available": false,
+            "device_name": null,
+            "error": "Skipped: CUDA driver not available"
+        })
+    };
+
+    let optix_available = optix["available"].as_bool().unwrap_or(false);
+
+    let status = if optix_available {
+        "ok"
+    } else if cuda_available {
+        "no_optix"
+    } else {
+        "no_cuda_driver"
+    };
+
+    let output = serde_json::json!({
+        "status": status,
+        "cuda": cuda,
+        "optix": optix,
+    });
+    println!("{}", serde_json::to_string(&output)?);
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

@@ -45,6 +45,10 @@ struct Args {
     /// 启用 AI 降噪 (Tensor Core, 仅 GPU 模式有效)
     #[arg(long, default_value_t = false)]
     denoise: bool,
+
+    /// GPU 诊断：检测 CUDA 驱动/OptiX 是否可用，输出 JSON 后退出
+    #[arg(long, default_value_t = false)]
+    check_gpu: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -55,6 +59,29 @@ fn main() -> anyhow::Result<()> {
         .stack_size(16 * 1024 * 1024)
         .build_global()
         .unwrap_or_else(|_| {});
+
+    // GPU diagnostics mode — probe CUDA/OptiX and print JSON, then exit
+    if args.check_gpu {
+        #[cfg(feature = "cuda")]
+        return rt_next_week::cuda::optix::check_gpu_diagnostics();
+        #[cfg(not(feature = "cuda"))]
+        {
+            println!("{}", serde_json::to_string(&serde_json::json!({
+                "status": "not_compiled",
+                "cuda": {
+                    "available": false,
+                    "device_name": null,
+                    "error": "Binary built without CUDA feature. Rebuild with: cargo build --release --features cuda"
+                },
+                "optix": {
+                    "available": false,
+                    "device_name": null,
+                    "error": "OptiX SDK not linked"
+                }
+            })).unwrap());
+            return Ok(());
+        }
+    }
 
     let mut world = HittableList::new();
 
