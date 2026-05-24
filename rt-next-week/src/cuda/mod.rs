@@ -5,10 +5,8 @@
 
 #[cfg(feature = "cuda")]
 pub mod optix;
-
-// Future phases:
-// #[cfg(feature = "cuda")]
-// pub mod scene;
+#[cfg(feature = "cuda")]
+pub mod scene;
 // #[cfg(feature = "cuda")]
 // pub mod render;
 // #[cfg(feature = "cuda")]

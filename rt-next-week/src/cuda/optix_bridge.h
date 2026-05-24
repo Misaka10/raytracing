@@ -40,13 +40,13 @@ void optix_bridge_destroy(OptiXBridge* bridge);
 
 /* Build triangle acceleration structure (RT Core hardware BVH).
    vertices: array of 3*float per vertex, interleaved xyz
-   indices: array of 3*int per triangle
+   indices: array of 3*uint per triangle
    tri_count: number of triangles
    Returns true on success. */
 bool optix_bridge_build_accel(
     OptiXBridge* bridge,
     const float* vertices,
-    const int* indices,
+    const unsigned int* indices,
     int tri_count
 );
 

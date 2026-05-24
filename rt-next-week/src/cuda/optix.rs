@@ -63,7 +63,7 @@ extern "C" {
     fn optix_bridge_build_accel(
         bridge: *mut std::ffi::c_void,
         vertices: *const f32,
-        indices: *const i32,
+        indices: *const u32,
         tri_count: i32,
     ) -> bool;
 
@@ -106,7 +106,7 @@ impl OptiXBridge {
     }
 
     /// Build triangle acceleration structure (RT Core hardware BVH).
-    pub fn build_accel(&mut self, vertices: &[f32], indices: &[i32], tri_count: i32) -> bool {
+    pub fn build_accel(&mut self, vertices: &[f32], indices: &[u32], tri_count: i32) -> bool {
         unsafe {
             optix_bridge_build_accel(
                 self._private,
@@ -171,8 +171,7 @@ mod tests {
     /// Test that BridgeCameraParams has the correct size/memory layout.
     #[test]
     fn test_camera_params_layout() {
-        // Each float3 = 12 bytes (3 * f32)
-        // Total: 13 float3s + 3 floats = 13*12 + 3*4 = 156 + 12 = 168 bytes
-        assert_eq!(std::mem::size_of::<BridgeCameraParams>(), 168);
+        // 11 float3 arrays + 4 scalar floats = 11*12 + 4*4 = 148 bytes
+        assert_eq!(std::mem::size_of::<BridgeCameraParams>(), 148);
     }
 }

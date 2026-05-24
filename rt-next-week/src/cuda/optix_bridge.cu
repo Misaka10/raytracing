@@ -401,13 +401,13 @@ void optix_bridge_destroy(OptiXBridge* bridge) {
 bool optix_bridge_build_accel(
     OptiXBridge* bridge,
     const float* vertices,
-    const int* indices,
+    const unsigned int* indices,
     int tri_count)
 {
     if (!bridge) return false;
 
     const size_t vertexSize = tri_count * 3 * 3 * sizeof(float);
-    const size_t indexSize  = tri_count * 3 * sizeof(int);
+    const size_t indexSize  = tri_count * 3 * sizeof(unsigned int);
 
     // Upload vertex and index data
     CUDA_CHECK(cuMemAlloc(&bridge->d_vertexBuffer, vertexSize));
