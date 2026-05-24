@@ -8,3 +8,4 @@ extraResources:
     to: rt-next-week.exe
 win:
   target: portable
+  sign: null
