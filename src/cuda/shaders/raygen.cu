@@ -20,7 +20,7 @@ __device__ inline float3 face_normal(float3 ray_dir, float3 geo_normal, bool* fr
     }
 }
 
-extern "C" __global__ void __raygen__rg() {
+extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
     const uint3 idx = optixGetLaunchIndex();
     const unsigned int pixel_idx = idx.y * launch_params.width + idx.x;
     const unsigned int sqrt_spp = launch_params.sqrt_spp;

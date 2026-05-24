@@ -5,3 +5,5 @@
 *.exe
 electron/node_modules/
 /dist/
+/optix-sdk-*.zip
+*.zip
