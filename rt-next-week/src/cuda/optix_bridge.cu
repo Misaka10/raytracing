@@ -4,7 +4,6 @@
 #include <cuda.h>
 #include <optix.h>
 #include <optix_function_table_definition.h>
-#include <optix_stack_size.h>
 #include <optix_stubs.h>
 
 #include <cstdio>
@@ -219,7 +218,7 @@ OptiXBridge* optix_bridge_init(
     CUDA_CHECK_FREE(cuDeviceGetName(deviceName, sizeof(deviceName), cuDevice));
     fprintf(stderr, "[OptiXBridge] Using CUDA device: %s\n", deviceName);
 
-    CUDA_CHECK(cuCtxCreate(&bridge->cuCtx, CU_CTX_SCHED_SPIN, cuDevice));
+    CUDA_CHECK(cuCtxCreate(&bridge->cuCtx, NULL, CU_CTX_SCHED_SPIN, cuDevice));
     CUDA_CHECK(cuStreamCreate(&bridge->stream, CU_STREAM_DEFAULT));
 
     // --- OptiX init ---
@@ -246,7 +245,7 @@ OptiXBridge* optix_bridge_init(
     OptixModuleCompileOptions moduleCompileOpts = {};
     moduleCompileOpts.maxRegisterCount = OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT;
     moduleCompileOpts.optLevel = OPTIX_COMPILE_OPTIMIZATION_DEFAULT;
-    moduleCompileOpts.debugLevel = OPTIX_COMPILE_DEBUG_LEVEL_LINEINFO;
+    moduleCompileOpts.debugLevel = OPTIX_COMPILE_DEBUG_LEVEL_MINIMAL;
 
     char log[2048];
     size_t logSize = sizeof(log);
@@ -340,7 +339,7 @@ OptiXBridge* optix_bridge_init(
 
     OptixPipelineLinkOptions pipelineLinkOpts = {};
     pipelineLinkOpts.maxTraceDepth = 31;
-    pipelineLinkOpts.debugLevel = OPTIX_COMPILE_DEBUG_LEVEL_LINEINFO;
+    pipelineLinkOpts.maxTraversableGraphDepth = 1;
 
     logSize = sizeof(log);
     OPTIX_CHECK_LOG(optixPipelineCreate(
@@ -353,28 +352,8 @@ OptiXBridge* optix_bridge_init(
         &bridge->pipeline
     ));
 
-    // Compute stack sizes
-    OptixStackSizes stackSizes = {};
-    OPTIX_CHECK(optixUtilAccumulateStackSizes(bridge->raygenPG, &stackSizes, bridge->pipeline));
-    OPTIX_CHECK(optixUtilAccumulateStackSizes(bridge->missPG, &stackSizes, bridge->pipeline));
-    OPTIX_CHECK(optixUtilAccumulateStackSizes(bridge->hitgroupPG, &stackSizes, bridge->pipeline));
-
-    unsigned int directStackSize = 0, continuationStackSize = 0, maxTraversableDepth = 1;
-    OPTIX_CHECK(optixUtilComputeStackSizes(
-        &stackSizes,
-        maxTraversableDepth,
-        0, // maxCCDepth
-        0, // maxDCDepth
-        &directStackSize,
-        &continuationStackSize
-    ));
-
-    OPTIX_CHECK(optixPipelineSetStackSize(
-        bridge->pipeline,
-        directStackSize,
-        continuationStackSize,
-        maxTraversableDepth
-    ));
+    // Stack sizes: let OptiX use internal defaults (simpler + always correct)
+    // optixProgramGroupGetStackSize removed from OptiX 9.x function table
 
     // Build SBT records
     OPTIX_CHECK(optixSbtRecordPackHeader(bridge->raygenPG, &bridge->sbtRaygen));
