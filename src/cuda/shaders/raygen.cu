@@ -63,6 +63,18 @@ __device__ inline float light_pdf_value(GpuFloat3 origin, GpuFloat3 dir, GpuFloa
     return dist_sq / (cos_light * (1.0f / launch_params.light_area_inv));
 }
 
+// Check if a ray from origin in direction hits the sphere
+__device__ inline bool dir_hits_sphere(GpuFloat3 origin, GpuFloat3 dir) {
+    GpuFloat3 oc = vec_sub(origin, launch_params.sphere_center);
+    float a = vec_dot(dir, dir);
+    float h = vec_dot(oc, dir);
+    float c = vec_dot(oc, oc) - launch_params.sphere_radius * launch_params.sphere_radius;
+    float discriminant = h * h - a * c;
+    if (discriminant < 0.0f) return false;
+    float sqrtd = sqrtf(discriminant);
+    return (-h - sqrtd) / a > 0.001f || (-h + sqrtd) / a > 0.001f;
+}
+
 extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
     const uint3 idx = optixGetLaunchIndex();
     const unsigned int pixel_idx = idx.y * launch_params.width + idx.x;
@@ -157,15 +169,17 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
 
                 GpuMaterialData mat = launch_params.materials[mat_id];
 
-                // Emission
-                if (mat.mat_type == MAT_DIFFUSE_LIGHT) {
-                    color = vec_add(color, vec_mul(throughput, mat.emission));
-                    break;
-                }
-
-                // Determine front face and correct normal
+                // Determine front face and correct normal (before emission check)
                 bool front_face;
                 normal = face_normal(ray_dir, normal, &front_face);
+
+                // Emission (only from front face, matching CPU)
+                if (mat.mat_type == MAT_DIFFUSE_LIGHT) {
+                    if (front_face) {
+                        color = vec_add(color, vec_mul(throughput, mat.emission));
+                    }
+                    break;
+                }
 
                 // Scatter
                 ScatterResult sr;
@@ -204,6 +218,24 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                     continue;
                 }
 
+                // Sphere PDF helper: returns 1/solid_angle if direction hits sphere, else 0
+                // Matching CPU sphere.pdf_value() at sphere.rs:58-67
+                float sphere_pdf_val = 0.0f;
+                {
+                    GpuFloat3 sc = launch_params.sphere_center;
+                    float sr = launch_params.sphere_radius;
+                    GpuFloat3 oc = vec_sub(hit_point, sc);
+                    // If origin is inside the sphere, skip (shouldn't happen for solid-angle sampling)
+                    float dist_sq = vec_dot(oc, oc);
+                    if (dist_sq > sr * sr + 1e-4f) {
+                        float cos_theta_max = sqrtf(1.0f - fminf(1.0f, sr * sr / dist_sq));
+                        float solid_angle = 2.0f * 3.141592653589793f * (1.0f - cos_theta_max);
+                        if (solid_angle > 1e-10f) {
+                            sphere_pdf_val = 1.0f / solid_angle;
+                        }
+                    }
+                }
+
                 // === MIS with light sampling (50/50 mixture) ===
 
                 GpuFloat3 scattered_dir;
@@ -216,9 +248,10 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                     scattering_pdf = sr.pdf_value;  // cos(theta) / pi
 
                     // Mixture PDF: 0.5 * BSDF + 0.5 * hittable_pdf
-                    // hittable_pdf = 0.5 * light_pdf + 0.5 * sphere_pdf (sphere_pdf=0 since CPU sphere has no pdf_value)
+                    // hittable_pdf = 0.5 * light_pdf + 0.5 * sphere_pdf
                     float light_pdf = light_pdf_value(hit_point, scattered_dir, l_normal);
-                    float hittable_pdf = 0.5f * light_pdf; // 0.5 * light + 0.5 * 0
+                    float dir_sphere_pdf = dir_hits_sphere(hit_point, scattered_dir) ? sphere_pdf_val : 0.0f;
+                    float hittable_pdf = 0.5f * light_pdf + 0.5f * dir_sphere_pdf;
                     pdf_val = 0.5f * scattering_pdf + 0.5f * hittable_pdf;
                 } else {
                     // Strategy 2: hittable sampling — 50% light rect / 50% sphere
@@ -229,71 +262,29 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                         scattering_pdf = cosine_pdf_value(normal, scattered_dir);
 
                         float light_pdf = light_pdf_value(hit_point, scattered_dir, l_normal);
-                        float hittable_pdf = 0.5f * light_pdf; // 0.5 * light + 0.5 * 0
+                        float rect_sphere_pdf = dir_hits_sphere(hit_point, scattered_dir) ? sphere_pdf_val : 0.0f;
+                        float hittable_pdf = 0.5f * light_pdf + 0.5f * rect_sphere_pdf;
                         pdf_val = 0.5f * scattering_pdf + 0.5f * hittable_pdf;
-
-                        // Trace shadow ray to check light visibility
-                        unsigned int sp0 = 0;
-                        unsigned int sp1 = 0, sp2 = 0, sp3 = 0, sp4 = 0, sp5 = 0, sp6 = 0, sp7 = 0;
-                        optixTrace(
-                            launch_params.traversable,
-                            *reinterpret_cast<float3*>(&hit_point),
-                            *reinterpret_cast<float3*>(&scattered_dir),
-                            0.001f, 0.999f * sqrtf(vec_dot(vec_sub(light_pt, hit_point), vec_sub(light_pt, hit_point))),
-                            0.0f,
-                            OptixVisibilityMask(255),
-                            OPTIX_RAY_FLAG_NONE,
-                            0, 1, 0,
-                            sp0, sp1, sp2, sp3, sp4, sp5, sp6, sp7
-                        );
-
-                        if (sp0 == 0) {
-                            unsigned int hit_mat_id = sp7;
-                            bool hit_light = false;
-                            if (hit_mat_id < launch_params.material_count) {
-                                GpuMaterialData hit_mat = launch_params.materials[hit_mat_id];
-                                hit_light = (hit_mat.mat_type == MAT_DIFFUSE_LIGHT);
-                            }
-                            if (!hit_light) {
-                                pdf_val = 0.0f; // occluded by non-light geometry
-                            }
-                        }
                     } else {
-                        // Sphere direction sampling (matching CPU hittable_pdf for glass sphere)
-                        // Sample random point on sphere surface, scatter toward it
-                        GpuFloat3 sphere_pt;
+                        // Sphere solid-angle sampling (matching CPU sphere.random() / random_to_sphere)
+                        GpuFloat3 to_sphere = vec_sub(launch_params.sphere_center, hit_point);
+                        float dist_sq = vec_dot(to_sphere, to_sphere);
+                        GpuFloat3 dir_to_sphere = scl_div(to_sphere, sqrtf(dist_sq));
+                        Onb onb_s = onb_from_normal(dir_to_sphere);
                         {
-                            float u1 = rng_uniform(&rng);
-                            float u2 = rng_uniform(&rng);
-                            float sz = 1.0f - 2.0f * u2;
-                            float sr = sqrtf(fmaxf(0.0f, 1.0f - sz * sz));
-                            float phi = 2.0f * 3.141592653589793f * u1;
-                            sphere_pt = {
-                                launch_params.sphere_center.x + launch_params.sphere_radius * sr * cosf(phi),
-                                launch_params.sphere_center.y + launch_params.sphere_radius * sz,
-                                launch_params.sphere_center.z + launch_params.sphere_radius * sr * sinf(phi)
-                            };
+                            float r1 = rng_uniform(&rng);
+                            float r2 = rng_uniform(&rng);
+                            float cos_theta_max = sqrtf(1.0f - launch_params.sphere_radius * launch_params.sphere_radius / dist_sq);
+                            float z = 1.0f + r2 * (cos_theta_max - 1.0f);
+                            float sin_theta = sqrtf(1.0f - z * z);
+                            float phi = 2.0f * 3.141592653589793f * r1;
+                            scattered_dir = onb_transform(&onb_s, {cosf(phi) * sin_theta, sinf(phi) * sin_theta, z});
                         }
-                        scattered_dir = vec_normalize(vec_sub(sphere_pt, hit_point));
                         scattering_pdf = cosine_pdf_value(normal, scattered_dir);
-
-                        // hittable_pdf = 0.5 * light_pdf_value + 0.5 * sphere_pdf_value
-                        // sphere_pdf_value = 0 (CPU sphere doesn't implement pdf_value)
-                        // For direction toward sphere, light_pdf = 0 (doesn't hit light plane)
-                        float hittable_pdf = 0.0f; // both light and sphere pdf = 0
+                        float light_pdf = light_pdf_value(hit_point, scattered_dir, l_normal);
+                        float hittable_pdf = 0.5f * light_pdf + 0.5f * sphere_pdf_val;
                         pdf_val = 0.5f * scattering_pdf + 0.5f * hittable_pdf;
-
-                        // Sphere direction — trace full path (recurse), not shadow ray
-                        // The ray will scatter/refract when it hits the sphere
-                        // skip_pdf is NOT used here — we pass through MIS weighting
                     }
-                }
-
-                if (pdf_val < 1e-10f) {
-                    // Retry with BRDF-only as fallback
-                    scattered_dir = sr.scattered_dir;
-                    scattering_pdf = sr.pdf_value;
-                    pdf_val = scattering_pdf;
                 }
 
                 if (pdf_val < 1e-10f) break;
@@ -303,13 +294,6 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                     scl_mul(scattering_pdf / pdf_val, sr.attenuation));
 
                 if (vec_is_zero(throughput)) break;
-
-                // Russian roulette
-                if (depth > 3) {
-                    float q = fmaxf(vec_max_component(throughput), 0.05f);
-                    if (rng_uniform(&rng) > q) break;
-                    throughput = scl_div(throughput, q);
-                }
 
                 ray_origin = hit_point;
                 ray_dir = scattered_dir;
