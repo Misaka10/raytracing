@@ -98,3 +98,88 @@ impl BvhNode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hittable::HitRecord;
+    use crate::material::Material;
+    use crate::sphere::Sphere;
+
+    fn make_sphere(x: f64, y: f64, z: f64) -> super::super::Hittable {
+        super::super::Hittable::Sphere(Sphere::stationary(
+            Point3::new(x, y, z), 1.0,
+            Material::lambertian_color(Vec3::zero()),
+        ))
+    }
+
+    #[test]
+    fn test_bvh_single_hit() {
+        let mut objs = vec![make_sphere(0.0, 0.0, 0.0)];
+        let bvh = BvhNode::from_objects(&mut objs);
+        let r = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let mut rec = HitRecord {
+            p: Point3::zero(), normal: Vec3::zero(),
+            mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+        };
+        assert!(bvh.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
+        assert!((rec.t - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_bvh_single_miss() {
+        let mut objs = vec![make_sphere(0.0, 0.0, 0.0)];
+        let bvh = BvhNode::from_objects(&mut objs);
+        let r = Ray::new(Point3::new(0.0, 2.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let mut rec = HitRecord {
+            p: Point3::zero(), normal: Vec3::zero(),
+            mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+        };
+        assert!(!bvh.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
+    }
+
+    #[test]
+    fn test_bvh_closest_hit() {
+        let s1 = make_sphere(0.0, 0.0, 0.0);
+        let s2 = make_sphere(0.0, 0.0, 3.0);
+        let mut objs = vec![s1, s2];
+        let bvh = BvhNode::from_objects(&mut objs);
+        let r = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
+        let mut rec = HitRecord {
+            p: Point3::zero(), normal: Vec3::zero(),
+            mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+        };
+        assert!(bvh.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
+        assert!((rec.t - 4.0).abs() < 1e-6, "should hit closer sphere at z=0, got t={}", rec.t);
+    }
+
+    #[test]
+    fn test_bvh_bbox_covers_children() {
+        let mut objs = vec![
+            make_sphere(-5.0, 0.0, 0.0),
+            make_sphere(5.0, 0.0, 0.0),
+        ];
+        let bvh = BvhNode::from_objects(&mut objs);
+        let bb = bvh.bbox();
+        assert!(bb.x.min <= -6.0 + 1e-4);
+        assert!(bb.x.max >= 6.0 - 1e-4);
+    }
+
+    #[test]
+    fn test_bvh_pdf_positive() {
+        let mut objs = vec![
+            make_sphere(0.0, 0.0, 0.0),
+            make_sphere(0.0, 0.0, 0.0),
+            make_sphere(0.0, 0.0, 0.0),
+        ];
+        let bvh = BvhNode::from_objects(&mut objs);
+        let pdf = bvh.pdf_value(
+            &Point3::new(0.0, 0.0, -5.0),
+            &Vec3::new(0.0, 0.0, 1.0),
+        );
+        assert!(pdf > 0.0, "pdf should be positive for a ray that hits all spheres");
+    }
+}
