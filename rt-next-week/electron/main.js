@@ -87,7 +87,7 @@ ipcMain.handle('run-calibration', async () => {
                 try { fs.unlinkSync(calOutput); } catch (_) {}
                 resolve(calibration);
             } else {
-                resolve({ error: `Calibration exited with code ${code}`, fallback: 200 });
+                resolve({ error: `性能校准失败（退出码: ${code}），将使用默认估算值`, fallback: 200 });
             }
         });
     });
@@ -96,12 +96,12 @@ ipcMain.handle('run-calibration', async () => {
 // Start render
 ipcMain.handle('start-render', async (_event, config) => {
     if (renderProcess) {
-        return { error: 'A render is already in progress' };
+        return { error: '已有渲染任务正在进行中，请等待当前任务完成或取消后再试' };
     }
 
     const binaryPath = getRustBinaryPath();
     if (!fs.existsSync(binaryPath)) {
-        return { error: `Rust binary not found: ${binaryPath}\nBuild with: cargo build --release` };
+        return { error: `找不到渲染引擎程序: ${binaryPath}\n请先运行: cargo build --release` };
     }
 
     const outputPath = config.output || path.join(app.getPath('temp'), 'rt_render_output.png');
@@ -124,6 +124,7 @@ ipcMain.handle('start-render', async (_event, config) => {
 
         let buffer = '';
         let lastProgress = null;
+        let stderrLines = [];
 
         renderProcess.stdout.on('data', (data) => {
             buffer += data.toString();
@@ -150,6 +151,7 @@ ipcMain.handle('start-render', async (_event, config) => {
 
         renderProcess.stderr.on('data', (data) => {
             const lines = data.toString().split('\n').filter(l => l.trim());
+            stderrLines.push(...lines);
             for (const line of lines) {
                 if (mainWindow && !mainWindow.isDestroyed()) {
                     mainWindow.webContents.send('render-log', line);
@@ -159,7 +161,7 @@ ipcMain.handle('start-render', async (_event, config) => {
 
         renderProcess.on('error', (err) => {
             renderProcess = null;
-            resolve({ error: `Failed to start renderer: ${err.message}` });
+            resolve({ error: `启动渲染引擎失败: ${err.message}` });
         });
 
         renderProcess.on('close', (code) => {
@@ -171,8 +173,14 @@ ipcMain.handle('start-render', async (_event, config) => {
                         progress: lastProgress,
                     });
                 } else {
+                    const errDetail = stderrLines.length > 0
+                        ? '\n引擎输出:\n' + stderrLines.slice(-10).join('\n')
+                        : '';
+                    const exitMsg = code === null || code === null
+                        ? '渲染进程被信号终止'
+                        : `渲染引擎异常退出（退出码: ${code}）`;
                     mainWindow.webContents.send('render-error', {
-                        message: `Renderer exited with code ${code}`,
+                        message: exitMsg + '\n请检查分辨率、采样数等参数是否过大导致内存不足' + errDetail,
                     });
                 }
             }
@@ -187,7 +195,7 @@ ipcMain.on('cancel-render', () => {
         renderProcess.kill();
         renderProcess = null;
         if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('render-error', { message: 'Render cancelled by user' });
+            mainWindow.webContents.send('render-error', { message: '渲染已被用户取消' });
         }
     }
 });
@@ -201,6 +209,6 @@ ipcMain.handle('get-image-data', async (_event, imagePath) => {
         const base64 = data.toString('base64');
         return { dataUrl: `data:${mime};base64,${base64}` };
     } catch (err) {
-        return { error: `Cannot read image: ${err.message}` };
+        return { error: `读取渲染结果图片失败: ${err.message}` };
     }
 });

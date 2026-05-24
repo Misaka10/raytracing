@@ -210,7 +210,7 @@ btnStart.addEventListener('click', async () => {
     window.electronAPI.onDone(async (msg) => {
         progressBar.style.width = '100%';
         progressPercent.textContent = '100%';
-        progressEta.textContent = 'Done!';
+        progressEta.textContent = '渲染完成';
         setRenderingState(false);
 
         if (msg.output) {
@@ -225,7 +225,7 @@ btnStart.addEventListener('click', async () => {
     // Listen for error
     window.electronAPI.onError((msg) => {
         setRenderingState(false);
-        showError(msg.message || 'Unknown error');
+        showError(msg.message || '发生未知错误，请查看日志');
         progressSection.style.display = 'none';
     });
 
