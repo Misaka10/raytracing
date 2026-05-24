@@ -8,3 +8,7 @@ electron/node_modules/
 /dist-pkg/
 /optix-sdk-*.zip
 electron-builder-binaries-nsis-*.zip
+
+# Build artifacts
+RT Renderer*.zip
+RT Renderer*/
