@@ -284,7 +284,8 @@ OptiXBridge* optix_bridge_init(
     // Pipeline compile options
     OptixPipelineCompileOptions pipelineCompileOpts = {};
     pipelineCompileOpts.usesMotionBlur = false;
-    pipelineCompileOpts.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
+    pipelineCompileOpts.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS
+                                               | OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING;
     pipelineCompileOpts.numPayloadValues = 8; // match our Payload struct register count
     pipelineCompileOpts.numAttributeValues = 2; // barycentrics
     pipelineCompileOpts.exceptionFlags = OPTIX_EXCEPTION_FLAG_NONE;
@@ -484,7 +485,9 @@ bool optix_bridge_build_accel(
     buildInput.triangleArray.numSbtRecords = 1;
 
     OptixAccelBuildOptions accelOpts = {};
-    accelOpts.buildFlags = OPTIX_BUILD_FLAG_ALLOW_COMPACTION;
+    accelOpts.buildFlags = OPTIX_BUILD_FLAG_ALLOW_COMPACTION
+                         | OPTIX_BUILD_FLAG_PREFER_FAST_TRACE
+                         | OPTIX_BUILD_FLAG_ALLOW_RANDOM_VERTEX_ACCESS;
     accelOpts.operation  = OPTIX_BUILD_OPERATION_BUILD;
 
     OptixAccelBufferSizes bufferSizes = {};
