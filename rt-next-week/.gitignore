@@ -3,3 +3,5 @@
 *.ppm
 *.exr
 *.exe
+electron/node_modules/
+/dist/

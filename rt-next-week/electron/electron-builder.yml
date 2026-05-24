@@ -1,0 +1,10 @@
+appId: com.rt.renderer
+productName: RT Renderer
+copyright: CC0
+directories:
+  output: ../dist
+extraResources:
+  - from: ../target/release/rt-next-week.exe
+    to: rt-next-week.exe
+win:
+  target: portable

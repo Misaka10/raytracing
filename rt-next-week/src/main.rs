@@ -29,6 +29,14 @@ struct Args {
 
     #[arg(long, default_value = "output.png")]
     output: String,
+
+    /// 随机种子（可选，提供则确定性渲染，同 seed 同参数输出一致）
+    #[arg(long)]
+    seed: Option<u64>,
+
+    /// 启用 JSON 进度输出（用于 Electron IPC）
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -107,7 +115,7 @@ fn main() -> anyhow::Result<()> {
     let world_hittable = Hittable::BvhNode(bvh);
     let lights_hittable = Hittable::HittableList(lights);
 
-    cam.render(&world_hittable, &lights_hittable, &args.output)?;
+    cam.render(&world_hittable, &lights_hittable, &args.output, args.seed, args.json)?;
 
     Ok(())
 }
