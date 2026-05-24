@@ -105,6 +105,7 @@ src/
 ├── camera.rs            — CPU render loop (rayon) + GPU render entry + PNG output
 ├── vec3.rs              — Vec3 (x,y,z), Point3, Color aliases; SIMD f64 layout
 ├── ray.rs               — Ray { origin, direction, time }
+├── rng.rs               — Seedable RNG wrapper (deterministic rendering)
 ├── interval.rs          — [min, max] interval math (clamp, expand, surrounds)
 ├── aabb.rs              — Axis-Aligned Bounding Box
 ├── bvh.rs               — BVH tree (O(log n) hit test, spatial median split)
@@ -618,6 +619,7 @@ src/
 ├── camera.rs            — CPU 渲染循环（rayon）+ GPU 渲染入口 + PNG 输出
 ├── vec3.rs              — Vec3 (x,y,z)，Point3，Color 别名；SIMD f64 布局
 ├── ray.rs               — Ray { origin, direction, time }
+├── rng.rs               — 可设种子的随机数生成器（确定性渲染）
 ├── interval.rs          — [min, max] 区间运算（clamp, expand, surrounds）
 ├── aabb.rs              — 轴对齐包围盒
 ├── bvh.rs               — BVH 树（O(log n) 碰撞检测，空间中位数分割）
