@@ -33,7 +33,7 @@ npm install
 npm run dist
 
 # Quick fix: repack only app.asar (frontend changes)
-npx asar extract "RT Renderer 2.0.1 GPU Portable/resources/app.asar" app-src/
+npx asar extract "electron/dist-pkg/win-unpacked/resources/app.asar" app-src/
 # ... edit files in app-src/ ...
 npx asar pack app-src resources/app.asar
 # Then update resources/rt-next-week.exe and resources/app.asar in ZIP
