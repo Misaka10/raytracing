@@ -1,6 +1,10 @@
 #include "common.h"
 #include <optix_device.h>
 
+extern "C" {
+__constant__ LaunchParams launch_params;
+}
+
 extern "C" __global__ void __closesthit__ch() {
     // OptiX 9.x: set individual payload registers (all unsigned int)
     optixSetPayload_0(0); // miss = false
@@ -14,15 +18,30 @@ extern "C" __global__ void __closesthit__ch() {
     optixSetPayload_2(__float_as_uint(hit.y));
     optixSetPayload_3(__float_as_uint(hit.z));
 
-    // Barycentrics stored in normal fields (Phase 1 visual debug)
-    const float2 bary = optixGetTriangleBarycentrics();
-    float u = bary.x;
-    float v = bary.y;
-    float w = 1.0f - u - v;
-    optixSetPayload_4(__float_as_uint(u));
-    optixSetPayload_5(__float_as_uint(v));
-    optixSetPayload_6(__float_as_uint(w));
+    // Compute face normal from triangle vertices
+    unsigned int prim_idx = optixGetPrimitiveIndex();
+    unsigned int i0 = launch_params.index_buffer[prim_idx * 3 + 0];
+    unsigned int i1 = launch_params.index_buffer[prim_idx * 3 + 1];
+    unsigned int i2 = launch_params.index_buffer[prim_idx * 3 + 2];
 
-    // Material ID (placeholder — Phase 2 fills from SBT data)
-    optixSetPayload_7(0);
+    float3 v0 = launch_params.vertex_buffer[i0];
+    float3 v1 = launch_params.vertex_buffer[i1];
+    float3 v2 = launch_params.vertex_buffer[i2];
+
+    float3 e1 = vec_sub(v1, v0);
+    float3 e2 = vec_sub(v2, v0);
+    float3 normal = vec_cross(e1, e2);
+    // Use geometric normal (unnormalized is fine for direction check)
+    normal = vec_normalize(normal);
+
+    optixSetPayload_4(__float_as_uint(normal.x));
+    optixSetPayload_5(__float_as_uint(normal.y));
+    optixSetPayload_6(__float_as_uint(normal.z));
+
+    // Material ID from per-triangle buffer
+    unsigned int mat_id = 0;
+    if (launch_params.tri_material) {
+        mat_id = launch_params.tri_material[prim_idx];
+    }
+    optixSetPayload_7(mat_id);
 }

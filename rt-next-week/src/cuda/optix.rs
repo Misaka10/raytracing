@@ -73,6 +73,25 @@ extern "C" {
         height: i32,
     ) -> bool;
 
+    fn optix_bridge_set_tri_material(
+        bridge: *mut std::ffi::c_void,
+        tri_material: *const u32,
+        tri_count: i32,
+    ) -> bool;
+
+    fn optix_bridge_set_materials(
+        bridge: *mut std::ffi::c_void,
+        materials: *const std::ffi::c_void,
+        count: u32,
+    ) -> bool;
+
+    fn optix_bridge_set_render_params(
+        bridge: *mut std::ffi::c_void,
+        sqrt_spp: u32,
+        max_depth: u32,
+        pixel_samples_scale: f32,
+    ) -> bool;
+
     fn optix_bridge_render(
         bridge: *mut std::ffi::c_void,
         output: *mut f32,
@@ -120,6 +139,34 @@ impl OptiXBridge {
     /// Create the OptiX pipeline (raygen + closesthit + miss).
     pub fn create_pipeline(&mut self, width: i32, height: i32) -> bool {
         unsafe { optix_bridge_create_pipeline(self._private, width, height) }
+    }
+
+    /// Upload per-triangle material index data.
+    pub fn set_tri_material(&mut self, tri_material: &[u32]) -> bool {
+        unsafe {
+            optix_bridge_set_tri_material(self._private, tri_material.as_ptr(), tri_material.len() as i32)
+        }
+    }
+
+    /// Upload material data to GPU. `materials` must be a slice of
+    /// `#[repr(C)]` structs matching the C-side GpuMaterial layout (36 bytes each).
+    pub fn set_materials<T>(&mut self, materials: &[T]) -> bool {
+        let byte_len = materials.len() * std::mem::size_of::<T>();
+        if byte_len == 0 { return true; }
+        unsafe {
+            optix_bridge_set_materials(
+                self._private,
+                materials.as_ptr() as *const std::ffi::c_void,
+                materials.len() as u32,
+            )
+        }
+    }
+
+    /// Set render parameters (spp, max depth, etc.).
+    pub fn set_render_params(&mut self, sqrt_spp: u32, max_depth: u32, pixel_scale: f32) -> bool {
+        unsafe {
+            optix_bridge_set_render_params(self._private, sqrt_spp, max_depth, pixel_scale)
+        }
     }
 
     /// Launch the render. Output buffer must be pre-allocated to width * height * 3 floats.

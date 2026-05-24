@@ -26,13 +26,30 @@ struct GpuCameraParams {
     GpuFloat3 defocus_disk_u, defocus_disk_v;
 };
 
+// Must match shaders/common.h GpuMaterialData (36 bytes, 4-byte aligned)
+struct GpuMaterial {
+    unsigned int mat_type;
+    GpuFloat3 albedo;
+    float  fuzz;
+    float  ir;
+    GpuFloat3 emission;
+};
+
 struct GpuLaunchParams {
     unsigned int            width;
     unsigned int            height;
     unsigned int            seed;
+    unsigned int            sqrt_spp;
+    unsigned int            max_depth;
+    float                   pixel_samples_scale;
     GpuFloat3               background;
     GpuCameraParams         camera;
     GpuFloat3*              framebuffer;
+    GpuMaterial*            materials;
+    unsigned int            material_count;
+    GpuFloat3*              vertex_buffer;
+    unsigned int*           index_buffer;
+    unsigned int*           tri_material;
     OptixTraversableHandle  traversable;
 };
 
@@ -94,8 +111,18 @@ struct OptiXBridge {
     CUdeviceptr                  d_output;
     CUdeviceptr                  d_launchParams;
 
+    // Material data
+    CUdeviceptr                  d_materials;
+    unsigned int                 materialCount;
+    CUdeviceptr                  d_triMaterial;  // per-triangle material indices
+
     int                          width;
     int                          height;
+
+    // Render params (set before render)
+    unsigned int                 sqrtSpp;
+    unsigned int                 maxDepth;
+    float                        pixelScale;
 
     char                         errorMsg[512];
 };
@@ -185,8 +212,14 @@ OptiXBridge* optix_bridge_init(
     bridge->hasAccel = false;
     bridge->width = 0;
     bridge->height = 0;
+    bridge->sqrtSpp = 1;
+    bridge->maxDepth = 50;
+    bridge->pixelScale = 1.0f;
     bridge->d_output = 0;
     bridge->d_launchParams = 0;
+    bridge->d_materials = 0;
+    bridge->materialCount = 0;
+    bridge->d_triMaterial = 0;
     bridge->d_vertexBuffer = 0;
     bridge->d_indexBuffer = 0;
     bridge->d_gasBuffer = 0;
@@ -378,6 +411,8 @@ void optix_bridge_destroy(OptiXBridge* bridge) {
 
     if (bridge->d_output)      cuMemFree(bridge->d_output);
     if (bridge->d_launchParams) cuMemFree(bridge->d_launchParams);
+    if (bridge->d_triMaterial) cuMemFree(bridge->d_triMaterial);
+    if (bridge->d_materials)   cuMemFree(bridge->d_materials);
     if (bridge->d_vertexBuffer) cuMemFree(bridge->d_vertexBuffer);
     if (bridge->d_indexBuffer)  cuMemFree(bridge->d_indexBuffer);
     if (bridge->d_gasBuffer)    cuMemFree(bridge->d_gasBuffer);
@@ -539,8 +574,16 @@ bool optix_bridge_render(
     params.width  = (unsigned int)bridge->width;
     params.height = (unsigned int)bridge->height;
     params.seed   = seed;
+    params.sqrt_spp = bridge->sqrtSpp;
+    params.max_depth = bridge->maxDepth;
+    params.pixel_samples_scale = bridge->pixelScale;
     params.background = { 0.0f, 0.0f, 0.0f };
     params.framebuffer = (GpuFloat3*)bridge->d_output;
+    params.materials = (GpuMaterial*)bridge->d_materials;
+    params.material_count = bridge->materialCount;
+    params.vertex_buffer = (GpuFloat3*)bridge->d_vertexBuffer;
+    params.index_buffer = (unsigned int*)bridge->d_indexBuffer;
+    params.tri_material = (unsigned int*)bridge->d_triMaterial;
     params.traversable = bridge->gasHandle;
     fillGpuCamera(camera, &params.camera);
 
@@ -574,6 +617,48 @@ bool optix_bridge_render(
     const size_t outputSize = bridge->width * bridge->height * 3 * sizeof(float);
     CUDA_CHECK(cuMemcpyDtoH(output, bridge->d_output, outputSize));
 
+    return true;
+}
+
+bool optix_bridge_set_tri_material(OptiXBridge* bridge, const unsigned int* tri_material, int tri_count) {
+    if (!bridge || !tri_material || tri_count <= 0) return false;
+
+    if (bridge->d_triMaterial) {
+        CUDA_CHECK_FREE(cuMemFree(bridge->d_triMaterial));
+        bridge->d_triMaterial = 0;
+    }
+
+    const size_t size = tri_count * sizeof(unsigned int);
+    CUDA_CHECK(cuMemAlloc(&bridge->d_triMaterial, size));
+    CUDA_CHECK(cuMemcpyHtoD(bridge->d_triMaterial, tri_material, size));
+
+    fprintf(stderr, "[OptiXBridge] Uploaded tri_material: %d entries (%zu bytes)\n", tri_count, size);
+    return true;
+}
+
+bool optix_bridge_set_materials(OptiXBridge* bridge, const void* materials, unsigned int count) {
+    if (!bridge || !materials || count == 0) return false;
+
+    // Free old buffer if any
+    if (bridge->d_materials) {
+        CUDA_CHECK_FREE(cuMemFree(bridge->d_materials));
+        bridge->d_materials = 0;
+    }
+
+    const size_t size = count * sizeof(GpuMaterial);
+    CUDA_CHECK(cuMemAlloc(&bridge->d_materials, size));
+    CUDA_CHECK(cuMemcpyHtoD(bridge->d_materials, materials, size));
+    bridge->materialCount = count;
+
+    fprintf(stderr, "[OptiXBridge] Uploaded %u materials (%zu bytes)\n", count, size);
+    return true;
+}
+
+bool optix_bridge_set_render_params(OptiXBridge* bridge, unsigned int sqrt_spp, unsigned int max_depth, float pixel_samples_scale) {
+    if (!bridge) return false;
+    bridge->sqrtSpp = sqrt_spp;
+    bridge->maxDepth = max_depth;
+    bridge->pixelScale = pixel_samples_scale;
     return true;
 }
 

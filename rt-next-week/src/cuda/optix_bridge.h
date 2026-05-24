@@ -59,6 +59,35 @@ bool optix_bridge_create_pipeline(
     int height
 );
 
+/* Upload material data to GPU. Must be called before render.
+   materials: array of material structs (36 bytes each, matches GpuMaterialData)
+   count: number of materials
+   Returns true on success. */
+bool optix_bridge_set_materials(
+    OptiXBridge* bridge,
+    const void* materials,
+    unsigned int count
+);
+
+/* Upload per-triangle material index data.
+   tri_material: array of uint, one per triangle
+   tri_count: number of triangles
+   Returns true on success. */
+bool optix_bridge_set_tri_material(
+    OptiXBridge* bridge,
+    const unsigned int* tri_material,
+    int tri_count
+);
+
+/* Set render parameters (samples per pixel, max depth).
+   Must be called before render. */
+bool optix_bridge_set_render_params(
+    OptiXBridge* bridge,
+    unsigned int sqrt_spp,
+    unsigned int max_depth,
+    float pixel_samples_scale
+);
+
 /* Launch the render.
    output: pre-allocated float buffer (width * height * 3 floats, RGB interleaved).
    camera: camera parameters (matches CPU Camera).
