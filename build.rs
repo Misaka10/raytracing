@@ -232,46 +232,56 @@ fn main() {
     eprintln!("[build.rs] OptiX: {}", optix_path.display());
     eprintln!("[build.rs] MSVC:  {}", msvc_bin.display());
 
-    // --- Compile shader .cu files to .ptx ---
+    // --- Compile shader .cu files to .ptx (parallel) ---
     let shaders = ["raygen.cu", "closesthit.cu", "miss.cu"];
 
-    for shader in &shaders {
-        let input = shader_dir.join(shader);
-        let output = out_dir.join(format!("{}.ptx", shader));
+    std::thread::scope(|s| {
+        let handles: Vec<_> = shaders.iter().map(|shader| {
+            let input = shader_dir.join(shader);
+            let output = out_dir.join(format!("{}.ptx", shader));
+            let nvcc = &nvcc;
+            let msvc_bin = &msvc_bin;
+            let optix_include = &optix_include;
+            let shader_dir = &shader_dir;
+            s.spawn(move || {
+                eprintln!("[build.rs] Compiling {} -> {}", shader, output.display());
 
-        eprintln!("[build.rs] Compiling {} -> {}", shader, output.display());
+                let status = Command::new(&nvcc)
+                    .arg("-ptx")
+                    .arg("--use_fast_math")
+                    .arg("-O3")
+                    .arg("-lineinfo")
+                    .arg("--extra-device-vectorization")
+                    .arg("--gpu-architecture=compute_75")
+                    .arg(format!("-ccbin={}", msvc_bin.display()))
+                    .arg(format!("-I{}", optix_include.display()))
+                    .arg(format!("-I{}", shader_dir.display()))
+                    .arg("-o").arg(&output)
+                    .arg(&input)
+                    .status()
+                    .unwrap_or_else(|e| {
+                        panic!("NVCC not found at {}: {}\nInstall CUDA Toolkit 12.x.", nvcc.display(), e);
+                    });
 
-        let status = Command::new(&nvcc)
-            .arg("-ptx")
-            .arg("--use_fast_math")
-            .arg("-O3")
-            .arg("-lineinfo")
-            .arg("--extra-device-vectorization")
-            .arg("--gpu-architecture=compute_75")
-            .arg(format!("-ccbin={}", msvc_bin.display()))
-            .arg(format!("-I{}", optix_include.display()))
-            .arg(format!("-I{}", shader_dir.display()))
-            .arg("-o").arg(&output)
-            .arg(&input)
-            .status()
-            .unwrap_or_else(|e| {
-                panic!("NVCC not found at {}: {}\nInstall CUDA Toolkit 12.x.", nvcc.display(), e);
-            });
+                if !status.success() {
+                    panic!("NVCC failed compiling {}. Fix shader errors and retry.", shader);
+                }
 
-        if !status.success() {
-            panic!("NVCC failed compiling {}. Fix shader errors and retry.", shader);
+                // CUDA 13.x generates PTX ISA 9.1 which OptiX 9.1 SDK cannot parse.
+                // Patch the .version directive down to 8.5 — the actual instructions
+                // are compute_75-compatible and valid in PTX ISA 8.x.
+                let ptx_content = std::fs::read_to_string(&output)
+                    .unwrap_or_else(|e| panic!("Failed to read PTX {}: {}", output.display(), e));
+                let patched = ptx_content.replace(".version 9.1", ".version 8.5");
+                std::fs::write(&output, patched)
+                    .unwrap_or_else(|e| panic!("Failed to write patched PTX {}: {}", output.display(), e));
+                eprintln!("[build.rs]   Patched PTX version 9.1 -> 8.5 for OptiX 9.1 compatibility");
+            })
+        }).collect();
+        for h in handles {
+            h.join().unwrap();
         }
-
-        // CUDA 13.x generates PTX ISA 9.1 which OptiX 9.1 SDK cannot parse.
-        // Patch the .version directive down to 8.5 — the actual instructions
-        // are compute_75-compatible and valid in PTX ISA 8.x.
-        let ptx_content = std::fs::read_to_string(&output)
-            .unwrap_or_else(|e| panic!("Failed to read PTX {}: {}", output.display(), e));
-        let patched = ptx_content.replace(".version 9.1", ".version 8.5");
-        std::fs::write(&output, patched)
-            .unwrap_or_else(|e| panic!("Failed to write patched PTX {}: {}", output.display(), e));
-        eprintln!("[build.rs]   Patched PTX version 9.1 -> 8.5 for OptiX 9.1 compatibility");
-    }
+    });
 
     // --- Compile optix_bridge.cu to static library ---
     let bridge_cu = manifest_dir.join("src").join("cuda").join("optix_bridge.cu");
