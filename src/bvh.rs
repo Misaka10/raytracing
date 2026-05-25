@@ -1,21 +1,15 @@
+use rand::Rng;
+
 use crate::aabb::Aabb;
 use crate::hittable::HitRecord;
 use crate::interval::Interval;
 use crate::ray::Ray;
 use crate::vec3::{Point3, Vec3};
-use rand::Rng;
 
 #[derive(Clone)]
 pub enum BvhNode {
-    Leaf {
-        object: Box<super::Hittable>,
-        bbox: Aabb,
-    },
-    Split {
-        left: Box<BvhNode>,
-        right: Box<BvhNode>,
-        bbox: Aabb,
-    },
+    Leaf { object: Box<super::Hittable>, bbox: Aabb },
+    Split { left: Box<BvhNode>, right: Box<BvhNode>, bbox: Aabb },
 }
 
 impl BvhNode {
@@ -67,13 +61,18 @@ impl BvhNode {
     pub fn hit(&self, r: &Ray, ray_t: &Interval, rec: &mut HitRecord) -> bool {
         match self {
             BvhNode::Leaf { object, bbox } => {
-                if !bbox.hit(r, *ray_t) { return false; }
+                if !bbox.hit(r, *ray_t) {
+                    return false;
+                }
                 object.hit(r, ray_t, rec)
             }
             BvhNode::Split { left, right, bbox } => {
-                if !bbox.hit(r, *ray_t) { return false; }
+                if !bbox.hit(r, *ray_t) {
+                    return false;
+                }
                 let hit_left = left.hit(r, ray_t, rec);
-                let right_interval = Interval::new(ray_t.min, if hit_left { rec.t } else { ray_t.max });
+                let right_interval =
+                    Interval::new(ray_t.min, if hit_left { rec.t } else { ray_t.max });
                 let hit_right = right.hit(r, &right_interval, rec);
                 hit_left || hit_right
             }
@@ -93,7 +92,11 @@ impl BvhNode {
         match self {
             BvhNode::Leaf { object, .. } => object.random(origin, rng),
             BvhNode::Split { left, right, .. } => {
-                if rng.gen::<f64>() < 0.5 { left.random(origin, rng) } else { right.random(origin, rng) }
+                if rng.gen::<f64>() < 0.5 {
+                    left.random(origin, rng)
+                } else {
+                    right.random(origin, rng)
+                }
             }
         }
     }
@@ -120,7 +123,8 @@ mod tests {
 
     fn make_sphere(x: f64, y: f64, z: f64) -> super::super::Hittable {
         super::super::Hittable::Sphere(Sphere::stationary(
-            Point3::new(x, y, z), 1.0,
+            Point3::new(x, y, z),
+            1.0,
             Material::lambertian_color(Vec3::zero()),
         ))
     }
@@ -131,9 +135,13 @@ mod tests {
         let bvh = BvhNode::from_objects(&mut objs);
         let r = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
         let mut rec = HitRecord {
-            p: Point3::zero(), normal: Vec3::zero(),
+            p: Point3::zero(),
+            normal: Vec3::zero(),
             mat: Material::lambertian_color(Vec3::zero()),
-            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+            t: 0.0,
+            u: 0.0,
+            v: 0.0,
+            front_face: false,
         };
         assert!(bvh.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
         assert!((rec.t - 4.0).abs() < 1e-6);
@@ -145,9 +153,13 @@ mod tests {
         let bvh = BvhNode::from_objects(&mut objs);
         let r = Ray::new(Point3::new(0.0, 2.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
         let mut rec = HitRecord {
-            p: Point3::zero(), normal: Vec3::zero(),
+            p: Point3::zero(),
+            normal: Vec3::zero(),
             mat: Material::lambertian_color(Vec3::zero()),
-            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+            t: 0.0,
+            u: 0.0,
+            v: 0.0,
+            front_face: false,
         };
         assert!(!bvh.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
     }
@@ -160,9 +172,13 @@ mod tests {
         let bvh = BvhNode::from_objects(&mut objs);
         let r = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
         let mut rec = HitRecord {
-            p: Point3::zero(), normal: Vec3::zero(),
+            p: Point3::zero(),
+            normal: Vec3::zero(),
             mat: Material::lambertian_color(Vec3::zero()),
-            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+            t: 0.0,
+            u: 0.0,
+            v: 0.0,
+            front_face: false,
         };
         assert!(bvh.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
         assert!((rec.t - 4.0).abs() < 1e-6, "should hit closer sphere at z=0, got t={}", rec.t);
@@ -170,10 +186,7 @@ mod tests {
 
     #[test]
     fn test_bvh_bbox_covers_children() {
-        let mut objs = vec![
-            make_sphere(-5.0, 0.0, 0.0),
-            make_sphere(5.0, 0.0, 0.0),
-        ];
+        let mut objs = vec![make_sphere(-5.0, 0.0, 0.0), make_sphere(5.0, 0.0, 0.0)];
         let bvh = BvhNode::from_objects(&mut objs);
         let bb = bvh.bbox();
         assert!(bb.x.min <= -6.0 + 1e-4);
@@ -188,10 +201,7 @@ mod tests {
             make_sphere(0.0, 0.0, 0.0),
         ];
         let bvh = BvhNode::from_objects(&mut objs);
-        let pdf = bvh.pdf_value(
-            &Point3::new(0.0, 0.0, -5.0),
-            &Vec3::new(0.0, 0.0, 1.0),
-        );
+        let pdf = bvh.pdf_value(&Point3::new(0.0, 0.0, -5.0), &Vec3::new(0.0, 0.0, 1.0));
         assert!(pdf > 0.0, "pdf should be positive for a ray that hits all spheres");
     }
 }

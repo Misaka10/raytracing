@@ -1,6 +1,7 @@
+use rand::Rng;
+
 use crate::onb::Onb;
 use crate::vec3::{self, Vec3};
-use rand::Rng;
 
 #[derive(Clone)]
 pub enum Pdf {
@@ -10,9 +11,13 @@ pub enum Pdf {
 }
 
 impl Pdf {
-    pub fn sphere() -> Self { Pdf::Sphere }
+    pub fn sphere() -> Self {
+        Pdf::Sphere
+    }
 
-    pub fn cosine(normal: &Vec3) -> Self { Pdf::Cosine(Onb::new(normal)) }
+    pub fn cosine(normal: &Vec3) -> Self {
+        Pdf::Cosine(Onb::new(normal))
+    }
 
     pub fn mixture(p0: Pdf, p1: Pdf) -> Self {
         Pdf::Mixture(Box::new(p0), Box::new(p1))
@@ -34,7 +39,11 @@ impl Pdf {
             Pdf::Sphere => vec3::random_unit_vector(rng),
             Pdf::Cosine(uvw) => uvw.transform(&vec3::random_cosine_direction(rng)),
             Pdf::Mixture(p0, p1) => {
-                if rng.gen::<f64>() < 0.5 { p0.generate(rng) } else { p1.generate(rng) }
+                if rng.gen::<f64>() < 0.5 {
+                    p0.generate(rng)
+                } else {
+                    p1.generate(rng)
+                }
             }
         }
     }
@@ -42,9 +51,10 @@ impl Pdf {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
+
+    use super::*;
 
     #[test]
     fn test_sphere_pdf_value() {

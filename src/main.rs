@@ -1,12 +1,23 @@
+//! rt-next-week: 基于物理的蒙特卡洛路径追踪器
+//!
+//! CLI 入口程序，构建 Cornell Box 场景并启动 CPU 或 GPU 渲染。
+//! 支持 --calibrate 自测时模式（用于硬件吞吐量校准），
+//! 以及 --gpu / --denoise 等 GPU 加速选项。
+//!
+//! 使用示例：
+//!   rt-next-week.exe --width 1920 --samples 100 --output scene.png
+//!   rt-next-week.exe --gpu --denoise --samples 50
+//!   rt-next-week.exe --calibrate --width 320 --height 180 --samples 8
+
 use clap::Parser;
 use rt_next_week::camera::Camera;
 use rt_next_week::material::Material;
 use rt_next_week::quad::Quad;
-use rt_next_week::quad_box;
 use rt_next_week::sphere::Sphere;
 use rt_next_week::vec3::{Color, Point3, Vec3};
-use rt_next_week::{Hittable, HittableList};
+use rt_next_week::{quad_box, Hittable, HittableList};
 
+/// CLI 参数结构体，使用 clap derive 宏自动生成解析代码
 #[derive(Parser)]
 #[command(name = "rt-next-week")]
 #[command(about = "Physically based Monte Carlo path tracer (Rust port)")]
@@ -100,29 +111,49 @@ fn main() -> anyhow::Result<()> {
 
     // Cornell box sides
     world.add(Hittable::Quad(Quad::new(
-        Point3::new(555.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 555.0), Vec3::new(0.0, 555.0, 0.0), green,
+        Point3::new(555.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 555.0),
+        Vec3::new(0.0, 555.0, 0.0),
+        green,
     )));
     world.add(Hittable::Quad(Quad::new(
-        Point3::new(0.0, 0.0, 555.0), Vec3::new(0.0, 0.0, -555.0), Vec3::new(0.0, 555.0, 0.0), red,
+        Point3::new(0.0, 0.0, 555.0),
+        Vec3::new(0.0, 0.0, -555.0),
+        Vec3::new(0.0, 555.0, 0.0),
+        red,
     )));
     world.add(Hittable::Quad(Quad::new(
-        Point3::new(0.0, 555.0, 0.0), Vec3::new(555.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 555.0), white.clone(),
+        Point3::new(0.0, 555.0, 0.0),
+        Vec3::new(555.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 555.0),
+        white.clone(),
     )));
     world.add(Hittable::Quad(Quad::new(
-        Point3::new(0.0, 0.0, 555.0), Vec3::new(555.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -555.0), white.clone(),
+        Point3::new(0.0, 0.0, 555.0),
+        Vec3::new(555.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, -555.0),
+        white.clone(),
     )));
     world.add(Hittable::Quad(Quad::new(
-        Point3::new(555.0, 0.0, 555.0), Vec3::new(-555.0, 0.0, 0.0), Vec3::new(0.0, 555.0, 0.0), white.clone(),
+        Point3::new(555.0, 0.0, 555.0),
+        Vec3::new(-555.0, 0.0, 0.0),
+        Vec3::new(0.0, 555.0, 0.0),
+        white.clone(),
     )));
 
     // Light
     world.add(Hittable::Quad(Quad::new(
-        Point3::new(213.0, 554.0, 227.0), Vec3::new(130.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 105.0), light,
+        Point3::new(213.0, 554.0, 227.0),
+        Vec3::new(130.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 105.0),
+        light,
     )));
 
     // Box
     let box_geom = quad_box::make_box(
-        &Point3::new(0.0, 0.0, 0.0), &Point3::new(165.0, 330.0, 165.0), white.clone(),
+        &Point3::new(0.0, 0.0, 0.0),
+        &Point3::new(165.0, 330.0, 165.0),
+        white.clone(),
     );
     let box_rotated = Hittable::rotate_y(box_geom, 15.0);
     let box_translated = Hittable::translate(box_rotated, Vec3::new(265.0, 0.0, 295.0));
@@ -130,18 +161,21 @@ fn main() -> anyhow::Result<()> {
 
     // Glass sphere
     let glass = Material::dielectric(1.5);
-    world.add(Hittable::Sphere(Sphere::stationary(
-        Point3::new(190.0, 90.0, 190.0), 90.0, glass,
-    )));
+    world.add(Hittable::Sphere(Sphere::stationary(Point3::new(190.0, 90.0, 190.0), 90.0, glass)));
 
     // Light sources for importance sampling
     let mut lights = HittableList::new();
     let empty_mat = Material::lambertian_color(Color::zero());
     lights.add(Hittable::Quad(Quad::new(
-        Point3::new(343.0, 554.0, 332.0), Vec3::new(-130.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -105.0), empty_mat.clone(),
+        Point3::new(343.0, 554.0, 332.0),
+        Vec3::new(-130.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, -105.0),
+        empty_mat.clone(),
     )));
     lights.add(Hittable::Sphere(Sphere::stationary(
-        Point3::new(190.0, 90.0, 190.0), 90.0, empty_mat,
+        Point3::new(190.0, 90.0, 190.0),
+        90.0,
+        empty_mat,
     )));
 
     let mut cam = Camera::new();
@@ -168,9 +202,19 @@ fn main() -> anyhow::Result<()> {
         #[cfg(feature = "cuda")]
         cam.render_gpu(&world_hittable, &args.output, args.seed, args.denoise, args.calibrate)?;
         #[cfg(not(feature = "cuda"))]
-        anyhow::bail!("GPU support requires --features cuda. Rebuild with: cargo build --release --features cuda");
+        anyhow::bail!(
+            "GPU support requires --features cuda. Rebuild with: cargo build --release --features \
+             cuda"
+        );
     } else {
-        cam.render(&world_hittable, &lights_hittable, &args.output, args.seed, args.json, args.calibrate)?;
+        cam.render(
+            &world_hittable,
+            &lights_hittable,
+            &args.output,
+            args.seed,
+            args.json,
+            args.calibrate,
+        )?;
     }
 
     Ok(())

@@ -1,7 +1,6 @@
 appId: com.rt.renderer
 productName: RT Renderer
 copyright: CC0
-icon: assets/icon.ico
 directories:
   output: dist-pkg
 extraResources:
@@ -9,7 +8,7 @@ extraResources:
     to: rt-next-week.exe
 win:
   target: portable
-  sign: null
+  icon: assets/icon.ico
   signAndEditExecutable: false
 nsis:
   createDesktopShortcut: false

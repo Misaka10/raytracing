@@ -14,9 +14,15 @@ impl Onb {
         Self { axis: [u, v, w] }
     }
 
-    pub fn u(&self) -> &Vec3 { &self.axis[0] }
-    pub fn v(&self) -> &Vec3 { &self.axis[1] }
-    pub fn w(&self) -> &Vec3 { &self.axis[2] }
+    pub fn u(&self) -> &Vec3 {
+        &self.axis[0]
+    }
+    pub fn v(&self) -> &Vec3 {
+        &self.axis[1]
+    }
+    pub fn w(&self) -> &Vec3 {
+        &self.axis[2]
+    }
 
     pub fn transform(&self, v: &Vec3) -> Vec3 {
         v.e[0] * self.axis[0] + v.e[1] * self.axis[1] + v.e[2] * self.axis[2]

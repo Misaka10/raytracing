@@ -1,5 +1,6 @@
-use crate::vec3::Vec3;
 use rand::Rng;
+
+use crate::vec3::Vec3;
 
 const POINT_COUNT: usize = 256;
 
@@ -69,7 +70,9 @@ impl Perlin {
 
 fn perlin_generate_perm<R: Rng>(rng: &mut R) -> [usize; POINT_COUNT] {
     let mut p = [0; POINT_COUNT];
-    for i in 0..POINT_COUNT { p[i] = i; }
+    for i in 0..POINT_COUNT {
+        p[i] = i;
+    }
     permute(&mut p, rng);
     p
 }
@@ -106,9 +109,10 @@ fn perlin_interp(c: &[[[Vec3; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
+
+    use super::*;
 
     #[test]
     fn test_noise_range() {
@@ -117,7 +121,8 @@ mod tests {
         for i in 0..10 {
             for j in 0..10 {
                 for k in 0..10 {
-                    let v = perlin.noise(&Vec3::new(i as f64 * 0.1, j as f64 * 0.1, k as f64 * 0.1));
+                    let v =
+                        perlin.noise(&Vec3::new(i as f64 * 0.1, j as f64 * 0.1, k as f64 * 0.1));
                     assert!(v >= -1.0 && v <= 1.0, "noise value {} out of range", v);
                 }
             }

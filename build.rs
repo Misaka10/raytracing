@@ -84,7 +84,9 @@ fn find_optix_sdk() -> Option<PathBuf> {
 
 /// Scan a MSVC directory for the latest version, return the bin dir path.
 fn find_latest_msvc_bin(msvc_dir: &Path, tool: &str) -> Option<PathBuf> {
-    if !msvc_dir.exists() { return None; }
+    if !msvc_dir.exists() {
+        return None;
+    }
     let entries = std::fs::read_dir(msvc_dir).ok()?;
     let mut versions: Vec<_> = entries
         .filter_map(|e| e.ok())
@@ -116,7 +118,9 @@ fn find_msvc_tool(tool: &str) -> Option<PathBuf> {
     let vs_base_x86 = Path::new("C:/Program Files (x86)/Microsoft Visual Studio/2022");
 
     for base in [vs_base, vs_base_x86] {
-        if !base.exists() { continue; }
+        if !base.exists() {
+            continue;
+        }
         for edition in &["Community", "Professional", "Enterprise", "BuildTools"] {
             let msvc_dir = base.join(edition).join("VC").join("Tools").join("MSVC");
             if let Some(bin) = find_latest_msvc_bin(&msvc_dir, tool) {
@@ -127,9 +131,15 @@ fn find_msvc_tool(tool: &str) -> Option<PathBuf> {
 
     // Try vswhere
     if let Ok(output) = Command::new("vswhere")
-        .args(["-latest", "-products", "*",
-               "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-               "-property", "installationPath"])
+        .args([
+            "-latest",
+            "-products",
+            "*",
+            "-requires",
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property",
+            "installationPath",
+        ])
         .output()
     {
         let install_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -204,49 +214,62 @@ fn main() {
     let shaders = ["raygen.cu", "closesthit.cu", "miss.cu"];
 
     std::thread::scope(|s| {
-        let handles: Vec<_> = shaders.iter().map(|shader| {
-            let input = shader_dir.join(shader);
-            let output = out_dir.join(format!("{}.ptx", shader));
-            let nvcc = &nvcc;
-            let msvc_bin = &msvc_bin;
-            let optix_include = &optix_include;
-            let shader_dir = &shader_dir;
-            s.spawn(move || {
-                eprintln!("[build.rs] Compiling {} -> {}", shader, output.display());
+        let handles: Vec<_> = shaders
+            .iter()
+            .map(|shader| {
+                let input = shader_dir.join(shader);
+                let output = out_dir.join(format!("{}.ptx", shader));
+                let nvcc = &nvcc;
+                let msvc_bin = &msvc_bin;
+                let optix_include = &optix_include;
+                let shader_dir = &shader_dir;
+                s.spawn(move || {
+                    eprintln!("[build.rs] Compiling {} -> {}", shader, output.display());
 
-                let status = Command::new(&nvcc)
-                    .arg("-ptx")
-                    .arg("--use_fast_math")
-                    .arg("-O3")
-                    .arg("-lineinfo")
-                    .arg("--extra-device-vectorization")
-                    .arg("--gpu-architecture=compute_75")
-                    .arg("-Xcompiler").arg("/MT")
-                    .arg(format!("-ccbin={}", msvc_bin.display()))
-                    .arg(format!("-I{}", optix_include.display()))
-                    .arg(format!("-I{}", shader_dir.display()))
-                    .arg("-o").arg(&output)
-                    .arg(&input)
-                    .status()
-                    .unwrap_or_else(|e| {
-                        panic!("NVCC not found at {}: {}\nInstall CUDA Toolkit 12.x.", nvcc.display(), e);
+                    let status = Command::new(&nvcc)
+                        .arg("-ptx")
+                        .arg("--use_fast_math")
+                        .arg("-O3")
+                        .arg("-lineinfo")
+                        .arg("--extra-device-vectorization")
+                        .arg("--gpu-architecture=compute_75")
+                        .arg("-Xcompiler")
+                        .arg("/MT")
+                        .arg(format!("-ccbin={}", msvc_bin.display()))
+                        .arg(format!("-I{}", optix_include.display()))
+                        .arg(format!("-I{}", shader_dir.display()))
+                        .arg("-o")
+                        .arg(&output)
+                        .arg(&input)
+                        .status()
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "NVCC not found at {}: {}\nInstall CUDA Toolkit 12.x.",
+                                nvcc.display(),
+                                e
+                            );
+                        });
+
+                    if !status.success() {
+                        panic!("NVCC failed compiling {}. Fix shader errors and retry.", shader);
+                    }
+
+                    // CUDA 13.x generates PTX ISA 9.1 which OptiX 9.1 SDK cannot parse.
+                    // Patch the .version directive down to 8.5 — the actual instructions
+                    // are compute_75-compatible and valid in PTX ISA 8.x.
+                    let ptx_content = std::fs::read_to_string(&output).unwrap_or_else(|e| {
+                        panic!("Failed to read PTX {}: {}", output.display(), e)
                     });
-
-                if !status.success() {
-                    panic!("NVCC failed compiling {}. Fix shader errors and retry.", shader);
-                }
-
-                // CUDA 13.x generates PTX ISA 9.1 which OptiX 9.1 SDK cannot parse.
-                // Patch the .version directive down to 8.5 — the actual instructions
-                // are compute_75-compatible and valid in PTX ISA 8.x.
-                let ptx_content = std::fs::read_to_string(&output)
-                    .unwrap_or_else(|e| panic!("Failed to read PTX {}: {}", output.display(), e));
-                let patched = ptx_content.replace(".version 9.1", ".version 8.5");
-                std::fs::write(&output, patched)
-                    .unwrap_or_else(|e| panic!("Failed to write patched PTX {}: {}", output.display(), e));
-                eprintln!("[build.rs]   Patched PTX version 9.1 -> 8.5 for OptiX 9.1 compatibility");
+                    let patched = ptx_content.replace(".version 9.1", ".version 8.5");
+                    std::fs::write(&output, patched).unwrap_or_else(|e| {
+                        panic!("Failed to write patched PTX {}: {}", output.display(), e)
+                    });
+                    eprintln!(
+                        "[build.rs]   Patched PTX version 9.1 -> 8.5 for OptiX 9.1 compatibility"
+                    );
+                })
             })
-        }).collect();
+            .collect();
         for h in handles {
             h.join().unwrap();
         }
@@ -265,11 +288,13 @@ fn main() {
         .arg("-O3")
         .arg("-lineinfo")
         .arg("--gpu-architecture=compute_120")
-        .arg("-Xcompiler").arg("/MT")
+        .arg("-Xcompiler")
+        .arg("/MT")
         .arg(format!("-ccbin={}", msvc_bin.display()))
         .arg(format!("-I{}", optix_include.display()))
         .arg(format!("-I{}", cuda_include.display()))
-        .arg("-o").arg(&bridge_obj)
+        .arg("-o")
+        .arg(&bridge_obj)
         .arg(&bridge_cu)
         .status()
         .expect("NVCC failed for optix_bridge.cu");

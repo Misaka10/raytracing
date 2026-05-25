@@ -2,7 +2,11 @@ use crate::interval::Interval;
 use crate::vec3::Color;
 
 pub fn linear_to_gamma(linear: f64) -> f64 {
-    if linear > 0.0 { linear.sqrt() } else { 0.0 }
+    if linear > 0.0 {
+        linear.sqrt()
+    } else {
+        0.0
+    }
 }
 
 pub fn pixel_to_10bit(pixel_color: &Color) -> [u16; 3] {
@@ -10,9 +14,15 @@ pub fn pixel_to_10bit(pixel_color: &Color) -> [u16; 3] {
     let mut g = pixel_color.y();
     let mut b = pixel_color.z();
 
-    if r.is_nan() { r = 0.0; }
-    if g.is_nan() { g = 0.0; }
-    if b.is_nan() { b = 0.0; }
+    if r.is_nan() {
+        r = 0.0;
+    }
+    if g.is_nan() {
+        g = 0.0;
+    }
+    if b.is_nan() {
+        b = 0.0;
+    }
 
     r = linear_to_gamma(r);
     g = linear_to_gamma(g);
@@ -37,9 +47,15 @@ pub fn pixel_to_16bit(pixel_color: &Color) -> [u16; 3] {
     let mut g = pixel_color.y();
     let mut b = pixel_color.z();
 
-    if r.is_nan() { r = 0.0; }
-    if g.is_nan() { g = 0.0; }
-    if b.is_nan() { b = 0.0; }
+    if r.is_nan() {
+        r = 0.0;
+    }
+    if g.is_nan() {
+        g = 0.0;
+    }
+    if b.is_nan() {
+        b = 0.0;
+    }
 
     r = linear_to_gamma(r);
     g = linear_to_gamma(g);
@@ -58,9 +74,15 @@ pub fn pixel_to_8bit(pixel_color: &Color) -> [u8; 3] {
     let mut g = pixel_color.y();
     let mut b = pixel_color.z();
 
-    if r.is_nan() { r = 0.0; }
-    if g.is_nan() { g = 0.0; }
-    if b.is_nan() { b = 0.0; }
+    if r.is_nan() {
+        r = 0.0;
+    }
+    if g.is_nan() {
+        g = 0.0;
+    }
+    if b.is_nan() {
+        b = 0.0;
+    }
 
     r = linear_to_gamma(r);
     g = linear_to_gamma(g);

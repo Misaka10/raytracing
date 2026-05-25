@@ -69,11 +69,8 @@ extern "C" {
         vertex_count: i32,
     ) -> bool;
 
-    fn optix_bridge_create_pipeline(
-        bridge: *mut std::ffi::c_void,
-        width: i32,
-        height: i32,
-    ) -> bool;
+    fn optix_bridge_create_pipeline(bridge: *mut std::ffi::c_void, width: i32, height: i32)
+        -> bool;
 
     fn optix_bridge_set_tri_material(
         bridge: *mut std::ffi::c_void,
@@ -129,13 +126,7 @@ impl OptiXBridge {
         let ptx_c = std::ffi::CString::new(ptx_closesthit).ok()?;
         let ptx_m = std::ffi::CString::new(ptx_miss).ok()?;
 
-        let ptr = unsafe {
-            optix_bridge_init(
-                ptx_r.as_ptr(),
-                ptx_c.as_ptr(),
-                ptx_m.as_ptr(),
-            )
-        };
+        let ptr = unsafe { optix_bridge_init(ptx_r.as_ptr(), ptx_c.as_ptr(), ptx_m.as_ptr()) };
 
         if ptr.is_null() {
             None
@@ -145,7 +136,14 @@ impl OptiXBridge {
     }
 
     /// Build triangle acceleration structure (RT Core hardware BVH).
-    pub fn build_accel(&mut self, vertices: &[f32], indices: &[u32], normals: &[f32], tri_count: i32, vertex_count: i32) -> bool {
+    pub fn build_accel(
+        &mut self,
+        vertices: &[f32],
+        indices: &[u32],
+        normals: &[f32],
+        tri_count: i32,
+        vertex_count: i32,
+    ) -> bool {
         unsafe {
             optix_bridge_build_accel(
                 self._private,
@@ -166,7 +164,11 @@ impl OptiXBridge {
     /// Upload per-triangle material index data.
     pub fn set_tri_material(&mut self, tri_material: &[u32]) -> bool {
         unsafe {
-            optix_bridge_set_tri_material(self._private, tri_material.as_ptr(), tri_material.len() as i32)
+            optix_bridge_set_tri_material(
+                self._private,
+                tri_material.as_ptr(),
+                tri_material.len() as i32,
+            )
         }
     }
 
@@ -174,7 +176,9 @@ impl OptiXBridge {
     /// `#[repr(C)]` structs matching the C-side GpuMaterial layout (36 bytes each).
     pub fn set_materials<T>(&mut self, materials: &[T]) -> bool {
         let byte_len = materials.len() * std::mem::size_of::<T>();
-        if byte_len == 0 { return true; }
+        if byte_len == 0 {
+            return true;
+        }
         unsafe {
             optix_bridge_set_materials(
                 self._private,
@@ -186,18 +190,11 @@ impl OptiXBridge {
 
     /// Set render parameters (spp, max depth, etc.).
     pub fn set_render_params(&mut self, sqrt_spp: u32, max_depth: u32, pixel_scale: f32) -> bool {
-        unsafe {
-            optix_bridge_set_render_params(self._private, sqrt_spp, max_depth, pixel_scale)
-        }
+        unsafe { optix_bridge_set_render_params(self._private, sqrt_spp, max_depth, pixel_scale) }
     }
 
     /// Launch the render. Output buffer must be pre-allocated to width * height * 3 floats.
-    pub fn render(
-        &mut self,
-        output: &mut [f32],
-        camera: &BridgeCameraParams,
-        seed: u32,
-    ) -> bool {
+    pub fn render(&mut self, output: &mut [f32], camera: &BridgeCameraParams, seed: u32) -> bool {
         unsafe {
             optix_bridge_render(
                 self._private,
@@ -215,9 +212,7 @@ impl OptiXBridge {
             if ptr.is_null() {
                 "Unknown error".to_string()
             } else {
-                std::ffi::CStr::from_ptr(ptr)
-                    .to_string_lossy()
-                    .into_owned()
+                std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
             }
         }
     }
@@ -229,34 +224,26 @@ impl OptiXBridge {
             if ptr.is_null() {
                 return "";
             }
-            std::ffi::CStr::from_ptr(ptr)
-                .to_str()
-                .unwrap_or("")
+            std::ffi::CStr::from_ptr(ptr).to_str().unwrap_or("")
         }
     }
 
     /// Set area light geometry for importance sampling.
-    pub fn set_light(&mut self, corner: &[f32; 3], u: &[f32; 3], v: &[f32; 3], area_inv: f32) -> bool {
+    pub fn set_light(
+        &mut self,
+        corner: &[f32; 3],
+        u: &[f32; 3],
+        v: &[f32; 3],
+        area_inv: f32,
+    ) -> bool {
         unsafe {
-            optix_bridge_set_light(
-                self._private,
-                corner.as_ptr(),
-                u.as_ptr(),
-                v.as_ptr(),
-                area_inv,
-            )
+            optix_bridge_set_light(self._private, corner.as_ptr(), u.as_ptr(), v.as_ptr(), area_inv)
         }
     }
 
     /// Set sphere geometry for MIS direction sampling (matching CPU lights list).
     pub fn set_sphere(&mut self, center: &[f32; 3], radius: f32) -> bool {
-        unsafe {
-            optix_bridge_set_sphere(
-                self._private,
-                center.as_ptr(),
-                radius,
-            )
-        }
+        unsafe { optix_bridge_set_sphere(self._private, center.as_ptr(), radius) }
     }
 
     /// Apply AI denoiser (Tensor Core accelerated) to the last rendered frame.
@@ -360,15 +347,22 @@ fn cuda_driver_probe() -> serde_json::Value {
             });
         }
 
-        let name = std::ffi::CStr::from_ptr(name_buf.as_ptr())
-            .to_string_lossy()
-            .into_owned();
+        let name = std::ffi::CStr::from_ptr(name_buf.as_ptr()).to_string_lossy().into_owned();
 
         // Compute capability
         let mut cc_major: i32 = 0;
         let mut cc_minor: i32 = 0;
-        let cc = if cuDeviceGetAttribute(&mut cc_major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device) == 0
-            && cuDeviceGetAttribute(&mut cc_minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device) == 0 {
+        let cc = if cuDeviceGetAttribute(
+            &mut cc_major,
+            CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+            device,
+        ) == 0
+            && cuDeviceGetAttribute(
+                &mut cc_minor,
+                CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+                device,
+            ) == 0
+        {
             Some(format!("{}.{}", cc_major, cc_minor))
         } else {
             None
@@ -385,15 +379,22 @@ fn cuda_driver_probe() -> serde_json::Value {
         // Check minimum requirements
         let mut warnings: Vec<&str> = Vec::new();
         if driver_ver < 12000 {
-            warnings.push("Driver too old: NVIDIA R560+ required for OptiX 9.x support. Please update your driver.");
+            warnings.push(
+                "Driver too old: NVIDIA R560+ required for OptiX 9.x support. Please update your \
+                 driver.",
+            );
         }
         if let Some(ref cc_str) = cc {
             let parts: Vec<&str> = cc_str.split('.').collect();
             if let (Some(major_str), Some(minor_str)) = (parts.first(), parts.get(1)) {
-                if let (Ok(major), Ok(minor)) = (major_str.parse::<i32>(), minor_str.parse::<i32>()) {
+                if let (Ok(major), Ok(minor)) = (major_str.parse::<i32>(), minor_str.parse::<i32>())
+                {
                     let cc_num = major * 10 + minor;
                     if cc_num < 75 {
-                        warnings.push("GPU compute capability below 7.5 (Turing). This build targets sm_75 — older GPUs may not run all shaders correctly.");
+                        warnings.push(
+                            "GPU compute capability below 7.5 (Turing). This build targets sm_75 \
+                             — older GPUs may not run all shaders correctly.",
+                        );
                     }
                 }
             }
@@ -418,7 +419,11 @@ fn optix_bridge_probe(device_name: Option<&str>) -> serde_json::Value {
     match OptiXBridge::new(ptx_r, ptx_c, ptx_m) {
         Some(bridge) => {
             let name = bridge.get_device_name();
-            let name_str = if name.is_empty() { device_name.map(|s| s.to_string()) } else { Some(name.to_string()) };
+            let name_str = if name.is_empty() {
+                device_name.map(|s| s.to_string())
+            } else {
+                Some(name.to_string())
+            };
             serde_json::json!({
                 "available": true,
                 "device_name": name_str,

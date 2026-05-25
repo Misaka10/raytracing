@@ -1,7 +1,7 @@
-use rand::rngs::SmallRng;
-use rand::Rng;
-use rand::SeedableRng;
 use std::cell::RefCell;
+
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 
 thread_local! {
     static THREAD_RNG: RefCell<SmallRng> = RefCell::new(

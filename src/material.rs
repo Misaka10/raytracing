@@ -1,9 +1,10 @@
+use rand::Rng;
+
 use crate::hittable::HitRecord;
 use crate::pdf::Pdf;
 use crate::ray::Ray;
 use crate::texture::Texture;
 use crate::vec3::{self, Color, Vec3};
-use rand::Rng;
 
 #[derive(Clone)]
 pub struct ScatterRecord {
@@ -43,7 +44,9 @@ impl Material {
     pub fn metal(albedo: Color, fuzz: f64) -> Self {
         Material::Metal { albedo, fuzz: fuzz.min(1.0) }
     }
-    pub fn dielectric(ri: f64) -> Self { Material::Dielectric { refraction_index: ri } }
+    pub fn dielectric(ri: f64) -> Self {
+        Material::Dielectric { refraction_index: ri }
+    }
     pub fn diffuse_light_color(emit: Color) -> Self {
         Material::DiffuseLight { tex: Texture::solid_color(emit) }
     }
@@ -60,13 +63,23 @@ impl Material {
     pub fn emitted(&self, _r_in: &Ray, rec: &HitRecord, u: f64, v: f64, p: &Vec3) -> Color {
         match self {
             Material::DiffuseLight { tex } => {
-                if rec.front_face { tex.value(u, v, p) } else { Color::zero() }
+                if rec.front_face {
+                    tex.value(u, v, p)
+                } else {
+                    Color::zero()
+                }
             }
             _ => Color::zero(),
         }
     }
 
-    pub fn scatter<R: Rng>(&self, r_in: &Ray, rec: &HitRecord, srec: &mut ScatterRecord, rng: &mut R) -> bool {
+    pub fn scatter<R: Rng>(
+        &self,
+        r_in: &Ray,
+        rec: &HitRecord,
+        srec: &mut ScatterRecord,
+        rng: &mut R,
+    ) -> bool {
         match self {
             Material::Lambertian { tex } => {
                 srec.attenuation = tex.value(rec.u, rec.v, &rec.p);
@@ -114,7 +127,11 @@ impl Material {
         match self {
             Material::Lambertian { .. } => {
                 let cos_theta = rec.normal.dot(&scattered.dir.unit_vector());
-                if cos_theta < 0.0 { 0.0 } else { cos_theta / std::f64::consts::PI }
+                if cos_theta < 0.0 {
+                    0.0
+                } else {
+                    cos_theta / std::f64::consts::PI
+                }
             }
             Material::Isotropic { .. } => 1.0 / (4.0 * std::f64::consts::PI),
             _ => 0.0,

@@ -1,3 +1,5 @@
+use rand::Rng;
+
 use crate::aabb::Aabb;
 use crate::hittable::HitRecord;
 use crate::interval::Interval;
@@ -5,7 +7,6 @@ use crate::material::Material;
 use crate::onb::Onb;
 use crate::ray::Ray;
 use crate::vec3::{Point3, Vec3};
-use rand::Rng;
 
 #[derive(Clone)]
 pub struct Sphere {
@@ -27,7 +28,12 @@ impl Sphere {
         let box1 = Aabb::from_points(&(center1 - rvec), &(center1 + rvec));
         let box2 = Aabb::from_points(&(center2 - rvec), &(center2 + rvec));
         let bbox = Aabb::from_boxes(&box1, &box2);
-        Self { center: Ray::new(center1, center2 - center1, 0.0), radius: radius.max(0.0), mat, bbox }
+        Self {
+            center: Ray::new(center1, center2 - center1, 0.0),
+            radius: radius.max(0.0),
+            mat,
+            bbox,
+        }
     }
 
     pub fn hit(&self, r: &Ray, ray_t: &Interval, rec: &mut HitRecord) -> bool {
@@ -37,13 +43,17 @@ impl Sphere {
         let h = r.dir.dot(&oc);
         let c = oc.length_squared() - self.radius * self.radius;
         let discriminant = h * h - a * c;
-        if discriminant < 0.0 { return false; }
+        if discriminant < 0.0 {
+            return false;
+        }
 
         let sqrtd = discriminant.sqrt();
         let mut root = (h - sqrtd) / a;
         if !ray_t.surrounds(root) {
             root = (h + sqrtd) / a;
-            if !ray_t.surrounds(root) { return false; }
+            if !ray_t.surrounds(root) {
+                return false;
+            }
         }
 
         rec.t = root;
@@ -56,9 +66,19 @@ impl Sphere {
     }
 
     pub fn pdf_value(&self, origin: &Point3, direction: &Vec3) -> f64 {
-        let mut rec = HitRecord { p: Point3::zero(), normal: Vec3::zero(), mat: self.mat.clone(), t: 0.0, u: 0.0, v: 0.0, front_face: false };
+        let mut rec = HitRecord {
+            p: Point3::zero(),
+            normal: Vec3::zero(),
+            mat: self.mat.clone(),
+            t: 0.0,
+            u: 0.0,
+            v: 0.0,
+            front_face: false,
+        };
         let test_ray = Ray::new(*origin, *direction, 0.0);
-        if !self.hit(&test_ray, &Interval::new(0.001, f64::INFINITY), &mut rec) { return 0.0; }
+        if !self.hit(&test_ray, &Interval::new(0.001, f64::INFINITY), &mut rec) {
+            return 0.0;
+        }
 
         let dist_sq = (self.center.at(0.0) - *origin).length_squared();
         let cos_theta_max = (1.0 - self.radius * self.radius / dist_sq).sqrt();
@@ -98,11 +118,20 @@ mod tests {
 
     #[test]
     fn test_sphere_hit_center() {
-        let s = Sphere::stationary(Point3::new(0.0, 0.0, 0.0), 1.0, Material::lambertian_color(Vec3::zero()));
+        let s = Sphere::stationary(
+            Point3::new(0.0, 0.0, 0.0),
+            1.0,
+            Material::lambertian_color(Vec3::zero()),
+        );
         let r = Ray::new(Point3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
         let mut rec = HitRecord {
-            p: Point3::zero(), normal: Vec3::zero(), mat: Material::lambertian_color(Vec3::zero()),
-            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+            p: Point3::zero(),
+            normal: Vec3::zero(),
+            mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0,
+            u: 0.0,
+            v: 0.0,
+            front_face: false,
         };
         assert!(s.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
         assert!((rec.t - 4.0).abs() < 1e-6);
@@ -110,25 +139,42 @@ mod tests {
 
     #[test]
     fn test_sphere_miss() {
-        let s = Sphere::stationary(Point3::new(0.0, 0.0, 0.0), 1.0, Material::lambertian_color(Vec3::zero()));
+        let s = Sphere::stationary(
+            Point3::new(0.0, 0.0, 0.0),
+            1.0,
+            Material::lambertian_color(Vec3::zero()),
+        );
         let r = Ray::new(Point3::new(0.0, 2.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
         let mut rec = HitRecord {
-            p: Point3::zero(), normal: Vec3::zero(), mat: Material::lambertian_color(Vec3::zero()),
-            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+            p: Point3::zero(),
+            normal: Vec3::zero(),
+            mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0,
+            u: 0.0,
+            v: 0.0,
+            front_face: false,
         };
         assert!(!s.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
     }
 
     #[test]
     fn test_sphere_bbox() {
-        let s = Sphere::stationary(Point3::new(2.0, 2.0, 2.0), 3.0, Material::lambertian_color(Vec3::zero()));
+        let s = Sphere::stationary(
+            Point3::new(2.0, 2.0, 2.0),
+            3.0,
+            Material::lambertian_color(Vec3::zero()),
+        );
         assert!(s.bbox.x.min <= -1.0 + 1e-4);
         assert!(s.bbox.x.max >= 5.0 - 1e-4);
     }
 
     #[test]
     fn test_pdf_value() {
-        let s = Sphere::stationary(Point3::new(0.0, 0.0, 0.0), 1.0, Material::lambertian_color(Vec3::zero()));
+        let s = Sphere::stationary(
+            Point3::new(0.0, 0.0, 0.0),
+            1.0,
+            Material::lambertian_color(Vec3::zero()),
+        );
         let origin = Point3::new(0.0, 0.0, -5.0);
         let dir = Vec3::new(0.0, 0.0, 1.0);
         let pdf = s.pdf_value(&origin, &dir);

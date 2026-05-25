@@ -5,19 +5,33 @@ pub struct Interval {
 }
 
 impl Interval {
-    pub const fn new(min: f64, max: f64) -> Self { Self { min, max } }
+    pub const fn new(min: f64, max: f64) -> Self {
+        Self { min, max }
+    }
 
     pub const EMPTY: Interval = Interval { min: f64::INFINITY, max: f64::NEG_INFINITY };
     pub const UNIVERSE: Interval = Interval { min: f64::NEG_INFINITY, max: f64::INFINITY };
 
-    pub fn size(&self) -> f64 { self.max - self.min }
+    pub fn size(&self) -> f64 {
+        self.max - self.min
+    }
 
-    pub fn contains(&self, x: f64) -> bool { self.min <= x && x <= self.max }
+    pub fn contains(&self, x: f64) -> bool {
+        self.min <= x && x <= self.max
+    }
 
-    pub fn surrounds(&self, x: f64) -> bool { self.min < x && x < self.max }
+    pub fn surrounds(&self, x: f64) -> bool {
+        self.min < x && x < self.max
+    }
 
     pub fn clamp(&self, x: f64) -> f64 {
-        if x < self.min { self.min } else if x > self.max { self.max } else { x }
+        if x < self.min {
+            self.min
+        } else if x > self.max {
+            self.max
+        } else {
+            x
+        }
     }
 
     pub fn expand(&self, delta: f64) -> Interval {
@@ -39,7 +53,9 @@ impl std::ops::Add<f64> for Interval {
 
 impl std::ops::Add<Interval> for f64 {
     type Output = Interval;
-    fn add(self, ival: Interval) -> Interval { ival + self }
+    fn add(self, ival: Interval) -> Interval {
+        ival + self
+    }
 }
 
 #[cfg(test)]

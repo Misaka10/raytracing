@@ -1,3 +1,5 @@
+// RT 渲染器 — 前端渲染进程
+// 负责：用户输入采集、渲染参数验证、进度显示、GPU 检测、硬件校准与预估
 // DOM references
 const $ = (sel) => document.querySelector(sel);
 const widthSelect = $('#width-preset');
@@ -321,6 +323,7 @@ function displayImage(dataUrl) {
 }
 
 // GPU detection
+// GPU 可用性检测：更新设备名称、驱动、显存等状态显示
 async function checkGpu() {
     gpuStatus.style.display = 'block';
     gpuStatus.textContent = '正在检查 GPU...';
@@ -355,6 +358,8 @@ async function checkGpu() {
 }
 
 // Load calibration on startup
+// 加载硬件性能校准数据
+// 优先从缓存读取（版本号不匹配时自动失效），否则运行自测时
 async function loadCalibration() {
     calStatus.textContent = '校准中...';
     try {

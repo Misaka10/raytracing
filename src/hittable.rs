@@ -55,12 +55,24 @@ impl Hittable {
                     let newx = cos_theta * x + sin_theta * z;
                     let newz = -sin_theta * x + cos_theta * z;
                     let tester = Vec3::new(newx, y, newz);
-                    if tester.x() < min.e[0] { min.e[0] = tester.x(); }
-                    if tester.y() < min.e[1] { min.e[1] = tester.y(); }
-                    if tester.z() < min.e[2] { min.e[2] = tester.z(); }
-                    if tester.x() > max.e[0] { max.e[0] = tester.x(); }
-                    if tester.y() > max.e[1] { max.e[1] = tester.y(); }
-                    if tester.z() > max.e[2] { max.e[2] = tester.z(); }
+                    if tester.x() < min.e[0] {
+                        min.e[0] = tester.x();
+                    }
+                    if tester.y() < min.e[1] {
+                        min.e[1] = tester.y();
+                    }
+                    if tester.z() < min.e[2] {
+                        min.e[2] = tester.z();
+                    }
+                    if tester.x() > max.e[0] {
+                        max.e[0] = tester.x();
+                    }
+                    if tester.y() > max.e[1] {
+                        max.e[1] = tester.y();
+                    }
+                    if tester.z() > max.e[2] {
+                        max.e[2] = tester.z();
+                    }
                 }
             }
         }
@@ -75,7 +87,9 @@ impl Hittable {
             Hittable::BvhNode(b) => b.hit(r, ray_t, rec),
             Hittable::Translate(object, offset, _) => {
                 let offset_r = Ray::new(r.orig - *offset, r.dir, r.tm);
-                if !object.hit(&offset_r, ray_t, rec) { return false; }
+                if !object.hit(&offset_r, ray_t, rec) {
+                    return false;
+                }
                 rec.p = rec.p + *offset;
                 true
             }
@@ -91,7 +105,9 @@ impl Hittable {
                     sin_theta * r.dir.x() + cos_theta * r.dir.z(),
                 );
                 let rotated_r = Ray::new(orig, dir, r.tm);
-                if !object.hit(&rotated_r, ray_t, rec) { return false; }
+                if !object.hit(&rotated_r, ray_t, rec) {
+                    return false;
+                }
                 rec.p = Point3::new(
                     cos_theta * rec.p.x() + sin_theta * rec.p.z(),
                     rec.p.y(),

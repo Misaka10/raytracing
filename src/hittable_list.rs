@@ -1,9 +1,10 @@
+use rand::Rng;
+
 use crate::aabb::Aabb;
 use crate::hittable::HitRecord;
 use crate::interval::Interval;
 use crate::ray::Ray;
 use crate::vec3::{Point3, Vec3};
-use rand::Rng;
 
 #[derive(Default, Clone)]
 pub struct HittableList {
@@ -12,7 +13,9 @@ pub struct HittableList {
 }
 
 impl HittableList {
-    pub fn new() -> Self { Self { objects: Vec::new(), bbox: Aabb::default() } }
+    pub fn new() -> Self {
+        Self { objects: Vec::new(), bbox: Aabb::default() }
+    }
 
     pub fn add(&mut self, object: super::Hittable) {
         self.bbox = Aabb::from_boxes(&self.bbox, &object.bounding_box());
@@ -34,7 +37,9 @@ impl HittableList {
     }
 
     pub fn pdf_value(&self, origin: &Point3, direction: &Vec3) -> f64 {
-        if self.objects.is_empty() { return 0.0; }
+        if self.objects.is_empty() {
+            return 0.0;
+        }
         let weight = 1.0 / self.objects.len() as f64;
         let mut sum = 0.0;
         for obj in &self.objects {
@@ -44,7 +49,9 @@ impl HittableList {
     }
 
     pub fn random<R: Rng>(&self, origin: &Point3, rng: &mut R) -> Vec3 {
-        if self.objects.is_empty() { return Vec3::new(1.0, 0.0, 0.0); }
+        if self.objects.is_empty() {
+            return Vec3::new(1.0, 0.0, 0.0);
+        }
         let idx = rng.gen_range(0..self.objects.len());
         self.objects[idx].random(origin, rng)
     }

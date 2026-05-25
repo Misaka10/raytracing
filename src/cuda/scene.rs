@@ -53,9 +53,9 @@ impl GpuScene {
 
         for obj in &objects {
             if let Some(mat) = get_material(obj) {
-                let pos = dedup_mats.iter().position(|m| {
-                    std::ptr::eq(*m as *const Material, mat as *const Material)
-                });
+                let pos = dedup_mats
+                    .iter()
+                    .position(|m| std::ptr::eq(*m as *const Material, mat as *const Material));
                 if let Some(idx) = pos {
                     mat_indices.push(idx as u32);
                 } else {
@@ -164,7 +164,7 @@ impl GpuScene {
 
         self.vertices.reserve(12); // 4 corners × 3 floats
         self.normals.reserve(12);
-        self.indices.reserve(6);   // 2 triangles × 3 indices
+        self.indices.reserve(6); // 2 triangles × 3 indices
         self.tri_to_material.reserve(2);
 
         for corner in [q, q + u, q + v, q + u + v].iter() {
@@ -198,9 +198,7 @@ fn get_material(h: &Hittable) -> Option<&Material> {
         Hittable::Quad(q) => Some(&q.mat),
         Hittable::Translate(obj, _, _) => get_material(obj),
         Hittable::RotateY(obj, _, _, _) => get_material(obj),
-        Hittable::HittableList(list) => {
-            list.objects.first().and_then(|obj| get_material(obj))
-        }
+        Hittable::HittableList(list) => list.objects.first().and_then(|obj| get_material(obj)),
         Hittable::BvhNode(bvh) => get_bvh_material(bvh),
         _ => None,
     }
@@ -226,8 +224,11 @@ fn flatten_hittable(obj: &Hittable, out: &mut Vec<Hittable>) {
             flatten_bvh(bvh, out);
         }
         // Keep transforms as-is — they'll be handled in tessellation
-        Hittable::Translate(..) | Hittable::RotateY(..) |
-        Hittable::Sphere(_) | Hittable::Quad(_) | Hittable::ConstantMedium(_) => {
+        Hittable::Translate(..)
+        | Hittable::RotateY(..)
+        | Hittable::Sphere(_)
+        | Hittable::Quad(_)
+        | Hittable::ConstantMedium(_) => {
             out.push(obj.clone());
         }
     }
@@ -431,7 +432,8 @@ mod tests {
     #[test]
     fn test_sphere_vertex_normals_unit_length() {
         let s = Sphere::stationary(
-            Point3::new(0.0, 0.0, 0.0), 1.0,
+            Point3::new(0.0, 0.0, 0.0),
+            1.0,
             Material::lambertian_color(Color::new(0.5, 0.5, 0.5)),
         );
         let world = Hittable::Sphere(s);
@@ -443,8 +445,14 @@ mod tests {
             let ny = scene.normals[i + 1];
             let nz = scene.normals[i + 2];
             let n_len = (nx * nx + ny * ny + nz * nz).sqrt();
-            assert!((n_len - 1.0).abs() < 0.001,
-                "normal not unit length: ({},{},{}) len={}", nx, ny, nz, n_len);
+            assert!(
+                (n_len - 1.0).abs() < 0.001,
+                "normal not unit length: ({},{},{}) len={}",
+                nx,
+                ny,
+                nz,
+                n_len
+            );
         }
     }
 
@@ -452,7 +460,8 @@ mod tests {
     fn test_sphere_vertex_normals_direction() {
         // Unit sphere at origin: normal == position (both are (x,y,z)/r with r=1)
         let s = Sphere::stationary(
-            Point3::new(0.0, 0.0, 0.0), 1.0,
+            Point3::new(0.0, 0.0, 0.0),
+            1.0,
             Material::lambertian_color(Color::new(0.5, 0.5, 0.5)),
         );
         let world = Hittable::Sphere(s);
@@ -484,24 +493,31 @@ mod tests {
         let scene = GpuScene::from_world(&world);
 
         assert_eq!(scene.normals.len(), 12); // 4 vertices * 3 floats
-        // All 4 vertices should have the same normal
+                                             // All 4 vertices should have the same normal
         let n0 = (&scene.normals[0..3]).to_vec();
         for vi in 0..4 {
             let base = vi * 3;
             for c in 0..3 {
-                assert!((scene.normals[base + c] - n0[c]).abs() < 0.001,
-                    "vertex {} component {} differs: {} vs {}", vi, c, scene.normals[base + c], n0[c]);
+                assert!(
+                    (scene.normals[base + c] - n0[c]).abs() < 0.001,
+                    "vertex {} component {} differs: {} vs {}",
+                    vi,
+                    c,
+                    scene.normals[base + c],
+                    n0[c]
+                );
             }
         }
         // Quad in xy plane, normal should point in +z (or -z depending on winding)
-        let n_len = (n0[0]*n0[0] + n0[1]*n0[1] + n0[2]*n0[2]).sqrt();
+        let n_len = (n0[0] * n0[0] + n0[1] * n0[1] + n0[2] * n0[2]).sqrt();
         assert!((n_len - 1.0).abs() < 0.001, "face normal not unit length");
     }
 
     #[test]
     fn test_sphere_vertex_radius() {
         let s = Sphere::stationary(
-            Point3::new(2.0, 3.0, 4.0), 2.0,
+            Point3::new(2.0, 3.0, 4.0),
+            2.0,
             Material::lambertian_color(Color::new(0.5, 0.5, 0.5)),
         );
         let world = Hittable::Sphere(s);
@@ -512,7 +528,11 @@ mod tests {
             let dy = scene.vertices[i + 1] - 3.0;
             let dz = scene.vertices[i + 2] - 4.0;
             let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-            assert!((dist - 2.0).abs() < 0.002, "vertex at distance {} from center, expected 2.0", dist);
+            assert!(
+                (dist - 2.0).abs() < 0.002,
+                "vertex at distance {} from center, expected 2.0",
+                dist
+            );
         }
     }
 
@@ -550,12 +570,22 @@ mod tests {
         let box_mat_idx = scene.tri_to_material[2] as usize;
         let box_mat = &scene.materials[box_mat_idx];
         // Box material must be white (0.73, 0.73, 0.73), NOT red (0.65, 0.05, 0.05)
-        assert!((box_mat.albedo[0] - 0.73).abs() < 0.01,
-            "box albedo[0] = {}, expected 0.73 (red wall albedo is 0.65). get_material returned wrong material!", box_mat.albedo[0]);
-        assert!((box_mat.albedo[1] - 0.73).abs() < 0.01,
-            "box albedo[1] = {}, expected 0.73", box_mat.albedo[1]);
-        assert!((box_mat.albedo[2] - 0.73).abs() < 0.01,
-            "box albedo[2] = {}, expected 0.73", box_mat.albedo[2]);
+        assert!(
+            (box_mat.albedo[0] - 0.73).abs() < 0.01,
+            "box albedo[0] = {}, expected 0.73 (red wall albedo is 0.65). get_material returned \
+             wrong material!",
+            box_mat.albedo[0]
+        );
+        assert!(
+            (box_mat.albedo[1] - 0.73).abs() < 0.01,
+            "box albedo[1] = {}, expected 0.73",
+            box_mat.albedo[1]
+        );
+        assert!(
+            (box_mat.albedo[2] - 0.73).abs() < 0.01,
+            "box albedo[2] = {}, expected 0.73",
+            box_mat.albedo[2]
+        );
     }
 
     #[test]
@@ -601,9 +631,26 @@ mod tests {
         });
         let scene = GpuScene::from_world(&world);
         // Box = 6 quads = 12 triangles = 24 vertices
-        assert!(!scene.vertices.is_empty(), "Box should produce vertices (was silently dropped before fix)");
-        assert_eq!(scene.tri_to_material.len(), 12, "6 quads * 2 tris = 12, got {}", scene.tri_to_material.len());
-        assert_eq!(scene.vertices.len(), 24 * 3, "6 quads * 4 verts * 3 floats = 72, got {}", scene.vertices.len());
-        assert_eq!(scene.normals.len(), scene.vertices.len(), "normals count must match vertices count");
+        assert!(
+            !scene.vertices.is_empty(),
+            "Box should produce vertices (was silently dropped before fix)"
+        );
+        assert_eq!(
+            scene.tri_to_material.len(),
+            12,
+            "6 quads * 2 tris = 12, got {}",
+            scene.tri_to_material.len()
+        );
+        assert_eq!(
+            scene.vertices.len(),
+            24 * 3,
+            "6 quads * 4 verts * 3 floats = 72, got {}",
+            scene.vertices.len()
+        );
+        assert_eq!(
+            scene.normals.len(),
+            scene.vertices.len(),
+            "normals count must match vertices count"
+        );
     }
 }

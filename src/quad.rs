@@ -1,10 +1,11 @@
+use rand::Rng;
+
 use crate::aabb::Aabb;
 use crate::hittable::HitRecord;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
 use crate::vec3::{Point3, Vec3};
-use rand::Rng;
 
 #[derive(Clone)]
 pub struct Quad {
@@ -36,10 +37,14 @@ impl Quad {
 
     pub fn hit(&self, r: &Ray, ray_t: &Interval, rec: &mut HitRecord) -> bool {
         let denom = self.normal.dot(&r.dir);
-        if denom.abs() < 1e-8 { return false; }
+        if denom.abs() < 1e-8 {
+            return false;
+        }
 
         let t = (self.d - self.normal.dot(&r.orig)) / denom;
-        if !ray_t.contains(t) { return false; }
+        if !ray_t.contains(t) {
+            return false;
+        }
 
         let intersection = r.at(t);
         let planar = intersection - self.q;
@@ -47,7 +52,9 @@ impl Quad {
         let beta = self.w.dot(&self.u.cross(&planar));
 
         let unit = Interval::new(0.0, 1.0);
-        if !unit.contains(alpha) || !unit.contains(beta) { return false; }
+        if !unit.contains(alpha) || !unit.contains(beta) {
+            return false;
+        }
 
         rec.t = t;
         rec.p = intersection;
@@ -61,10 +68,17 @@ impl Quad {
     pub fn pdf_value(&self, origin: &Point3, direction: &Vec3) -> f64 {
         let test_ray = Ray::new(*origin, *direction, 0.0);
         let mut rec = HitRecord {
-            p: Point3::zero(), normal: Vec3::zero(), mat: self.mat.clone(),
-            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+            p: Point3::zero(),
+            normal: Vec3::zero(),
+            mat: self.mat.clone(),
+            t: 0.0,
+            u: 0.0,
+            v: 0.0,
+            front_face: false,
         };
-        if !self.hit(&test_ray, &Interval::new(0.001, f64::INFINITY), &mut rec) { return 0.0; }
+        if !self.hit(&test_ray, &Interval::new(0.001, f64::INFINITY), &mut rec) {
+            return 0.0;
+        }
         let dist_sq = rec.t * rec.t * direction.length_squared();
         let cosine = (direction.dot(&rec.normal) / direction.length()).abs();
         dist_sq / (cosine * self.area)
@@ -90,8 +104,13 @@ mod tests {
         );
         let r = Ray::new(Point3::new(1.0, 1.0, -1.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
         let mut rec = HitRecord {
-            p: Point3::zero(), normal: Vec3::zero(), mat: Material::lambertian_color(Vec3::zero()),
-            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+            p: Point3::zero(),
+            normal: Vec3::zero(),
+            mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0,
+            u: 0.0,
+            v: 0.0,
+            front_face: false,
         };
         assert!(q.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
         assert!((rec.t - 1.0).abs() < 1e-6);
@@ -107,8 +126,13 @@ mod tests {
         );
         let r = Ray::new(Point3::new(1.0, 1.0, -1.0), Vec3::new(1.0, 0.0, 0.0), 0.0);
         let mut rec = HitRecord {
-            p: Point3::zero(), normal: Vec3::zero(), mat: Material::lambertian_color(Vec3::zero()),
-            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+            p: Point3::zero(),
+            normal: Vec3::zero(),
+            mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0,
+            u: 0.0,
+            v: 0.0,
+            front_face: false,
         };
         assert!(!q.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
     }
@@ -123,8 +147,13 @@ mod tests {
         );
         let r = Ray::new(Point3::new(3.0, 3.0, -1.0), Vec3::new(0.0, 0.0, 1.0), 0.0);
         let mut rec = HitRecord {
-            p: Point3::zero(), normal: Vec3::zero(), mat: Material::lambertian_color(Vec3::zero()),
-            t: 0.0, u: 0.0, v: 0.0, front_face: false,
+            p: Point3::zero(),
+            normal: Vec3::zero(),
+            mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0,
+            u: 0.0,
+            v: 0.0,
+            front_face: false,
         };
         assert!(!q.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
     }

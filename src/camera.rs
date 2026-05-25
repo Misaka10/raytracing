@@ -1,4 +1,17 @@
-use crate::color_io;
+//! 相机与渲染循环模块
+//!
+//! 包含 CPU 多线程渲染（rayon 并行）和 GPU 渲染（OptiX RT Core）的完整实现。
+//! 校准模式（--calibrate）下使用 std::time::Instant 自测时，
+//! 仅在渲染核���代码段计时，不含 CUDA 初始化或 PNG 写入等固定开销。
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use indicatif::{ProgressBar, ProgressStyle};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
+use serde_json::json;
+
 use crate::hittable::HitRecord;
 use crate::hittable_list::HittableList;
 use crate::interval::Interval;
@@ -6,14 +19,7 @@ use crate::material::Material;
 use crate::pdf::Pdf;
 use crate::ray::Ray;
 use crate::vec3::{self, Point3, Vec3};
-use crate::Hittable;
-use indicatif::{ProgressBar, ProgressStyle};
-use rand::rngs::SmallRng;
-use rand::Rng;
-use rand::SeedableRng;
-use rayon::prelude::*;
-use serde_json::json;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::{color_io, Hittable};
 
 pub struct Camera {
     pub aspect_ratio: f64,
@@ -46,27 +52,46 @@ pub struct Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self {
-            aspect_ratio: 1.0, image_width: 100, samples_per_pixel: 10, max_depth: 10,
-            background: Vec3::zero(), vfov: 90.0, lookfrom: Point3::new(0.0, 0.0, 0.0),
-            lookat: Point3::new(0.0, 0.0, -1.0), vup: Vec3::new(0.0, 1.0, 0.0),
-            defocus_angle: 0.0, focus_dist: 10.0,
-            image_height: 0, pixel_samples_scale: 0.0, sqrt_spp: 0, recip_sqrt_spp: 0.0,
-            center: Point3::zero(), pixel00_loc: Point3::zero(),
-            pixel_delta_u: Vec3::zero(), pixel_delta_v: Vec3::zero(),
-            u: Vec3::zero(), v: Vec3::zero(), w: Vec3::zero(),
-            defocus_disk_u: Vec3::zero(), defocus_disk_v: Vec3::zero(),
+            aspect_ratio: 1.0,
+            image_width: 100,
+            samples_per_pixel: 10,
+            max_depth: 10,
+            background: Vec3::zero(),
+            vfov: 90.0,
+            lookfrom: Point3::new(0.0, 0.0, 0.0),
+            lookat: Point3::new(0.0, 0.0, -1.0),
+            vup: Vec3::new(0.0, 1.0, 0.0),
+            defocus_angle: 0.0,
+            focus_dist: 10.0,
+            image_height: 0,
+            pixel_samples_scale: 0.0,
+            sqrt_spp: 0,
+            recip_sqrt_spp: 0.0,
+            center: Point3::zero(),
+            pixel00_loc: Point3::zero(),
+            pixel_delta_u: Vec3::zero(),
+            pixel_delta_v: Vec3::zero(),
+            u: Vec3::zero(),
+            v: Vec3::zero(),
+            w: Vec3::zero(),
+            defocus_disk_u: Vec3::zero(),
+            defocus_disk_v: Vec3::zero(),
         }
     }
 }
 
 impl Camera {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn initialize(&mut self) {
         if self.image_height == 0 {
             self.image_height = (self.image_width as f64 / self.aspect_ratio) as u32;
         }
-        if self.image_height < 1 { self.image_height = 1; }
+        if self.image_height < 1 {
+            self.image_height = 1;
+        }
 
         self.sqrt_spp = (self.samples_per_pixel as f64).sqrt() as u32;
         self.pixel_samples_scale = 1.0 / (self.sqrt_spp * self.sqrt_spp) as f64;
@@ -89,10 +114,8 @@ impl Camera {
         self.pixel_delta_u = viewport_u / self.image_width as f64;
         self.pixel_delta_v = viewport_v / self.image_height as f64;
 
-        let viewport_upper_left = self.center
-            - self.focus_dist * self.w
-            - viewport_u / 2.0
-            - viewport_v / 2.0;
+        let viewport_upper_left =
+            self.center - self.focus_dist * self.w - viewport_u / 2.0 - viewport_v / 2.0;
         self.pixel00_loc = viewport_upper_left + 0.5 * (self.pixel_delta_u + self.pixel_delta_v);
 
         let defocus_radius = self.focus_dist * (self.defocus_angle / 2.0).to_radians().tan();
@@ -131,7 +154,11 @@ impl Camera {
     }
 
     #[cfg(feature = "cuda")]
-    fn find_light_quad_inner(&self, hittable: &Hittable, is_root: bool) -> Option<([f32; 3], [f32; 3], [f32; 3], f32)> {
+    fn find_light_quad_inner(
+        &self,
+        hittable: &Hittable,
+        is_root: bool,
+    ) -> Option<([f32; 3], [f32; 3], [f32; 3], f32)> {
         match hittable {
             Hittable::Quad(q) => {
                 if matches!(&q.mat, crate::material::Material::DiffuseLight { .. }) {
@@ -143,7 +170,8 @@ impl Camera {
                         u[2] * v[0] - u[0] * v[2],
                         u[0] * v[1] - u[1] * v[0],
                     ];
-                    let area = (cross[0]*cross[0] + cross[1]*cross[1] + cross[2]*cross[2]).sqrt();
+                    let area =
+                        (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
                     let area_inv = if area > 0.0 { 1.0 / area } else { 0.0 };
                     return Some((corner, u, v, area_inv));
                 }
@@ -160,17 +188,23 @@ impl Camera {
                                     result = self.find_light_quad_inner(leaf, false);
                                 }
                             });
-                            if result.is_some() { return result; }
+                            if result.is_some() {
+                                return result;
+                            }
                         } else {
                             let result = self.find_light_quad_inner(obj, false);
-                            if result.is_some() { return result; }
+                            if result.is_some() {
+                                return result;
+                            }
                         }
                     }
                     None
                 } else {
                     for obj in &list.objects {
                         let result = self.find_light_quad_inner(obj, false);
-                        if result.is_some() { return result; }
+                        if result.is_some() {
+                            return result;
+                        }
                     }
                     None
                 }
@@ -213,7 +247,11 @@ impl Camera {
         match hittable {
             Hittable::Sphere(s) => {
                 if matches!(&s.mat, crate::material::Material::Dielectric { .. }) {
-                    let center = [s.center.orig.x() as f32, s.center.orig.y() as f32, s.center.orig.z() as f32];
+                    let center = [
+                        s.center.orig.x() as f32,
+                        s.center.orig.y() as f32,
+                        s.center.orig.z() as f32,
+                    ];
                     let radius = s.radius as f32;
                     return Some((center, radius));
                 }
@@ -226,18 +264,29 @@ impl Camera {
                         bvh.visit_leaves(&mut |leaf| {
                             if result.is_none() {
                                 if let Hittable::Sphere(s) = leaf {
-                                    if matches!(&s.mat, crate::material::Material::Dielectric { .. }) {
-                                        let center = [s.center.orig.x() as f32, s.center.orig.y() as f32, s.center.orig.z() as f32];
+                                    if matches!(
+                                        &s.mat,
+                                        crate::material::Material::Dielectric { .. }
+                                    ) {
+                                        let center = [
+                                            s.center.orig.x() as f32,
+                                            s.center.orig.y() as f32,
+                                            s.center.orig.z() as f32,
+                                        ];
                                         let radius = s.radius as f32;
                                         result = Some((center, radius));
                                     }
                                 }
                             }
                         });
-                        if result.is_some() { return result; }
+                        if result.is_some() {
+                            return result;
+                        }
                     } else {
                         let result = self.find_glass_sphere(obj);
-                        if result.is_some() { return result; }
+                        if result.is_some() {
+                            return result;
+                        }
                     }
                 }
                 None
@@ -248,7 +297,11 @@ impl Camera {
                     if result.is_none() {
                         if let Hittable::Sphere(s) = leaf {
                             if matches!(&s.mat, crate::material::Material::Dielectric { .. }) {
-                                let center = [s.center.orig.x() as f32, s.center.orig.y() as f32, s.center.orig.z() as f32];
+                                let center = [
+                                    s.center.orig.x() as f32,
+                                    s.center.orig.y() as f32,
+                                    s.center.orig.z() as f32,
+                                ];
                                 let radius = s.radius as f32;
                                 result = Some((center, radius));
                             }
@@ -262,7 +315,19 @@ impl Camera {
     }
 
     #[cfg(feature = "cuda")]
-    pub fn render_gpu(&self, world: &Hittable, output_path: &str, seed: Option<u64>, denoise: bool, calibrate: bool) -> anyhow::Result<()> {
+    /// GPU 渲染入口（OptiX RT Core）
+    ///
+    /// 将 CPU 场景转换为 GPU 三角形网格，通过 OptiX 管线路径追踪。
+    /// 校准模式下计时器仅在 `bridge.render()` 调用期间运行，
+    /// 不包含材质上传、管线创建等固定开销，确保测量的是实际渲染吞吐量。
+    pub fn render_gpu(
+        &self,
+        world: &Hittable,
+        output_path: &str,
+        seed: Option<u64>,
+        denoise: bool,
+        calibrate: bool,
+    ) -> anyhow::Result<()> {
         use crate::cuda::optix::{self, BridgeCameraParams, OptiXBridge};
         use crate::cuda::scene::GpuScene;
 
@@ -281,10 +346,12 @@ impl Camera {
             anyhow::bail!("GPU scene has no geometry");
         }
 
-        eprintln!("GPU scene: {} triangles, {} vertices, {} materials",
+        eprintln!(
+            "GPU scene: {} triangles, {} vertices, {} materials",
             gpu_scene.tri_to_material.len(),
             gpu_scene.vertices.len() / 3,
-            gpu_scene.materials.len());
+            gpu_scene.materials.len()
+        );
 
         // Load PTX shaders
         let (ptx_raygen, ptx_ch, ptx_ms) = optix::load_ptx_shaders();
@@ -296,7 +363,13 @@ impl Camera {
         // Build acceleration structure
         let tri_count = gpu_scene.tri_to_material.len() as i32;
         let vertex_count = (gpu_scene.vertices.len() / 3) as i32;
-        if !bridge.build_accel(&gpu_scene.vertices, &gpu_scene.indices, &gpu_scene.normals, tri_count, vertex_count) {
+        if !bridge.build_accel(
+            &gpu_scene.vertices,
+            &gpu_scene.indices,
+            &gpu_scene.normals,
+            tri_count,
+            vertex_count,
+        ) {
             anyhow::bail!("Failed to build BVH: {}", bridge.get_error());
         }
 
@@ -329,8 +402,8 @@ impl Camera {
         // Build camera params
         let cam = BridgeCameraParams {
             lookfrom: f64x3_to_f32x3(self.lookfrom),
-            lookat:   f64x3_to_f32x3(self.lookat),
-            vup:      f64x3_to_f32x3(self.vup),
+            lookat: f64x3_to_f32x3(self.lookat),
+            vup: f64x3_to_f32x3(self.vup),
             vfov: self.vfov as f32,
             aspect_ratio: self.aspect_ratio as f32,
             defocus_angle: self.defocus_angle as f32,
@@ -363,9 +436,13 @@ impl Camera {
             let elapsed = start.elapsed();
             let total_pixel_samples = (w * h * spp as usize) as f64;
             let px_per_ms = total_pixel_samples / (elapsed.as_secs_f64() * 1000.0);
-            println!("{}", serde_json::to_string(&serde_json::json!({
-                "pixel_samples_per_ms": px_per_ms,
-            })).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "pixel_samples_per_ms": px_per_ms,
+                }))
+                .unwrap()
+            );
         }
 
         // Apply AI denoiser if requested
@@ -384,7 +461,19 @@ impl Camera {
         Ok(())
     }
 
-    pub fn render(&self, world: &Hittable, lights: &Hittable, output_path: &str, seed: Option<u64>, json_progress: bool, calibrate: bool) -> anyhow::Result<()> {
+    /// CPU 多线程渲染（rayon 并行）
+    ///
+    /// 逐像素并行路径追踪，每行用 golden-ratio 种子保证可重现性。
+    /// 校准模式下计时器从渲染循环开始到结束，不包含 PNG 写入。
+    pub fn render(
+        &self,
+        world: &Hittable,
+        lights: &Hittable,
+        output_path: &str,
+        seed: Option<u64>,
+        json_progress: bool,
+        calibrate: bool,
+    ) -> anyhow::Result<()> {
         let lights_list = match lights {
             Hittable::HittableList(l) => l,
             _ => anyhow::bail!("lights must be HittableList"),
@@ -405,7 +494,10 @@ impl Camera {
                 });
                 println!("{}", serde_json::to_string(&msg).unwrap());
             } else {
-                println!("Rendering {}x{} with {} spp, {} bounces...", w, h, self.samples_per_pixel, self.max_depth);
+                println!(
+                    "Rendering {}x{} with {} spp, {} bounces...",
+                    w, h, self.samples_per_pixel, self.max_depth
+                );
             }
         }
 
@@ -415,7 +507,10 @@ impl Camera {
             let bar = ProgressBar::new(total_pixels as u64);
             bar.set_style(
                 ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} pixels ({percent}%) [{eta}]")
+                    .template(
+                        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} \
+                         pixels ({percent}%) [{eta}]",
+                    )
                     .unwrap()
                     .progress_chars("##-"),
             );
@@ -433,7 +528,9 @@ impl Camera {
             .flat_map(|j| {
                 let mut row_data: Vec<[u16; 3]> = Vec::with_capacity(w);
                 let mut rng = match seed {
-                    Some(s) => SmallRng::seed_from_u64(s.wrapping_add(GOLDEN_RATIO_U64.wrapping_mul(j as u64))),
+                    Some(s) => SmallRng::seed_from_u64(
+                        s.wrapping_add(GOLDEN_RATIO_U64.wrapping_mul(j as u64)),
+                    ),
                     None => SmallRng::from_entropy(),
                 };
 
@@ -442,7 +539,8 @@ impl Camera {
                     for s_j in 0..self.sqrt_spp {
                         for s_i in 0..self.sqrt_spp {
                             let r = self.get_ray(i as u32, j as u32, s_i, s_j, &mut rng);
-                            pixel_color += ray_color(&r, self.max_depth, world, lights_list, &mut rng);
+                            pixel_color +=
+                                ray_color(&r, self.max_depth, world, lights_list, &mut rng);
                         }
                     }
                     let rgb = color_io::pixel_to_10bit(&(self.pixel_samples_scale * pixel_color));
@@ -475,9 +573,13 @@ impl Camera {
             let elapsed = start.elapsed();
             let total_pixel_samples = (total_pixels * self.samples_per_pixel as usize) as f64;
             let px_per_ms = total_pixel_samples / (elapsed.as_secs_f64() * 1000.0);
-            println!("{}", serde_json::to_string(&json!({
-                "pixel_samples_per_ms": px_per_ms,
-            })).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "pixel_samples_per_ms": px_per_ms,
+                }))
+                .unwrap()
+            );
         }
 
         if !calibrate {
@@ -498,13 +600,24 @@ impl Camera {
 }
 
 fn ray_color<R: Rng>(
-    r: &Ray, depth: u32, world: &Hittable, lights: &HittableList, rng: &mut R,
+    r: &Ray,
+    depth: u32,
+    world: &Hittable,
+    lights: &HittableList,
+    rng: &mut R,
 ) -> Vec3 {
-    if depth == 0 { return Vec3::zero(); }
+    if depth == 0 {
+        return Vec3::zero();
+    }
 
     let mut rec = HitRecord {
-        p: Point3::zero(), normal: Vec3::zero(), mat: Material::lambertian_color(Vec3::zero()),
-        t: 0.0, u: 0.0, v: 0.0, front_face: false,
+        p: Point3::zero(),
+        normal: Vec3::zero(),
+        mat: Material::lambertian_color(Vec3::zero()),
+        t: 0.0,
+        u: 0.0,
+        v: 0.0,
+        front_face: false,
     };
 
     if !world.hit(r, &Interval::new(0.001, f64::INFINITY), &mut rec) {
@@ -525,15 +638,12 @@ fn ray_color<R: Rng>(
     let bsdf_pdf = srec.pdf_ptr.unwrap_or_else(|| Pdf::sphere());
 
     // 内联混合 PDF：直接使用 lights 引用，避免克隆
-    let scattered_dir = if rng.gen::<f64>() < 0.5 {
-        lights.random(&rec.p, rng)
-    } else {
-        bsdf_pdf.generate(rng)
-    };
+    let scattered_dir =
+        if rng.gen::<f64>() < 0.5 { lights.random(&rec.p, rng) } else { bsdf_pdf.generate(rng) };
     let scattered_dir = scattered_dir.unit_vector(); // 提前归一化，省去下游重复 sqrt
     let scattered = Ray::new(rec.p, scattered_dir, r.tm);
-    let pdf_val = 0.5 * lights.pdf_value(&rec.p, &scattered.dir)
-        + 0.5 * bsdf_pdf.value(&scattered.dir);
+    let pdf_val =
+        0.5 * lights.pdf_value(&rec.p, &scattered.dir) + 0.5 * bsdf_pdf.value(&scattered.dir);
     let scattering_pdf = rec.mat.scattering_pdf(r, &rec, &scattered);
 
     let sample_color = ray_color(&scattered, depth - 1, world, lights, rng);
@@ -552,14 +662,17 @@ fn f64x3_to_f32x3(v: crate::vec3::Vec3) -> [f32; 3] {
 
 #[cfg(feature = "cuda")]
 fn save_png_gpu(path: &str, width: u32, height: u32, data: &[f32]) -> anyhow::Result<()> {
+    use image::{ImageBuffer, Rgb};
+
     use crate::color_io::linear_to_gamma;
     use crate::interval::Interval;
-    use image::{ImageBuffer, Rgb};
 
     let intensity = Interval::new(0.0, 0.9999);
     let mut buf: ImageBuffer<Rgb<u16>, Vec<u16>> = ImageBuffer::new(width, height);
     for (idx, chunk) in data.chunks(3).enumerate() {
-        if chunk.len() < 3 { break; }
+        if chunk.len() < 3 {
+            break;
+        }
         let x = idx as u32 % width;
         let y = idx as u32 / width;
         // Match CPU pixel_to_10bit: sqrt gamma + 10-bit scaled to 16-bit
@@ -593,12 +706,13 @@ fn save_png(path: &str, width: u32, height: u32, data: &[[u16; 3]]) -> anyhow::R
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::bvh::BvhNode;
     use crate::material::Material;
     use crate::sphere::Sphere;
     use crate::vec3::Color;
-    use std::fs;
 
     fn make_minimal_camera() -> Camera {
         let mut cam = Camera::new();
@@ -619,11 +733,12 @@ mod tests {
     fn make_test_scene() -> (Hittable, Hittable) {
         let mat = Material::lambertian_color(Color::new(0.5, 0.5, 0.5));
         let light_mat = Material::diffuse_light_color(Color::new(4.0, 4.0, 4.0));
-        let sphere = Hittable::Sphere(Sphere::stationary(
-            Point3::new(278.0, 278.0, 0.0), 100.0, mat,
-        ));
+        let sphere =
+            Hittable::Sphere(Sphere::stationary(Point3::new(278.0, 278.0, 0.0), 100.0, mat));
         let light_sphere = Hittable::Sphere(Sphere::stationary(
-            Point3::new(278.0, 400.0, 0.0), 100.0, light_mat.clone(),
+            Point3::new(278.0, 400.0, 0.0),
+            100.0,
+            light_mat.clone(),
         ));
 
         let mut objects = vec![sphere, light_sphere.clone()];

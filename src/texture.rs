@@ -1,29 +1,21 @@
+use image::GenericImageView;
+
 use crate::interval::Interval;
 use crate::perlin::Perlin;
 use crate::vec3::{Color, Point3};
-use image::GenericImageView;
 
 #[derive(Clone)]
 pub enum Texture {
     SolidColor(Color),
-    Checker {
-        inv_scale: f64,
-        even: Box<Texture>,
-        odd: Box<Texture>,
-    },
-    Image {
-        data: Vec<u8>,
-        width: u32,
-        height: u32,
-    },
-    Noise {
-        noise: Perlin,
-        scale: f64,
-    },
+    Checker { inv_scale: f64, even: Box<Texture>, odd: Box<Texture> },
+    Image { data: Vec<u8>, width: u32, height: u32 },
+    Noise { noise: Perlin, scale: f64 },
 }
 
 impl Texture {
-    pub fn solid_color(albedo: Color) -> Self { Texture::SolidColor(albedo) }
+    pub fn solid_color(albedo: Color) -> Self {
+        Texture::SolidColor(albedo)
+    }
 
     pub fn checker(scale: f64, even: Texture, odd: Texture) -> Self {
         Texture::Checker { inv_scale: 1.0 / scale, even: Box::new(even), odd: Box::new(odd) }
@@ -51,7 +43,11 @@ impl Texture {
                 let xi = (*inv_scale * p.x()).floor() as i32;
                 let yi = (*inv_scale * p.y()).floor() as i32;
                 let zi = (*inv_scale * p.z()).floor() as i32;
-                if (xi + yi + zi) % 2 == 0 { even.value(u, v, p) } else { odd.value(u, v, p) }
+                if (xi + yi + zi) % 2 == 0 {
+                    even.value(u, v, p)
+                } else {
+                    odd.value(u, v, p)
+                }
             }
             Texture::Image { data, width, height } => {
                 if *height == 0 {

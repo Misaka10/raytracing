@@ -1,3 +1,5 @@
+// RT 渲染器 — Electron 主进程
+// 负责：窗口管理、Rust 渲染进程生命周期、IPC 通信、GPU 检测与性能校准
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -6,6 +8,7 @@ const fs = require('fs');
 let mainWindow = null;
 let renderProcess = null;
 
+// 获取 Rust 二进制文件路径（开发模式 vs 打包模式）
 function getRustBinaryPath() {
     if (app.isPackaged) {
         return path.join(process.resourcesPath, 'rt-next-week.exe');
@@ -88,8 +91,8 @@ ipcMain.handle('read-gpu-calibration', async () => {
     return null;
 });
 
-// Check if GPU binary is available
-// Check GPU availability using --check-gpu diagnostic flag (lightweight JSON probe)
+// GPU 可用性检测：使用 Rust 二进制 --check-gpu 诊断标志
+// 返回设备名称、驱动版本、计算能力、VRAM、OptiX 状态
 ipcMain.handle('check-gpu', async () => {
     const binaryPath = getRustBinaryPath();
     if (!fs.existsSync(binaryPath)) {
@@ -180,7 +183,9 @@ ipcMain.handle('check-gpu', async () => {
     });
 });
 
-// Run calibration benchmark
+// 硬件性能校准：spawn Rust 进程自测时，解析吞吐量 JSON
+// CPU: 320x180x8 spp | GPU: 1280x720x4 spp | max_depth=5
+// 结果缓存到 userData，版本号变更时自动失效
 ipcMain.handle('run-calibration', async (_event, useGpu = false) => {
     const binaryPath = getRustBinaryPath();
     if (!fs.existsSync(binaryPath)) {
@@ -288,7 +293,11 @@ ipcMain.handle('start-render', async (_event, config) => {
 
     const binaryPath = getRustBinaryPath();
     if (!fs.existsSync(binaryPath)) {
-        return { error: `找不到渲染器二进制文件: ${binaryPath}\n请先编译: cargo build --release` };
+        return {
+            error:
+                '找不到渲染器二进制文件: ' + binaryPath +
+                '\n请先编译: cargo build --release'
+        };
     }
 
     const outputPath = config.output || path.join(app.getPath('temp'), 'rt_render_output.png');
