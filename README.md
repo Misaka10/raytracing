@@ -104,23 +104,23 @@ src/
 ├── lib.rs               — Module declarations, feature-gated cuda module
 ├── camera.rs            — CPU render loop (rayon) + GPU render entry + PNG output
 ├── vec3.rs              — Vec3 (x,y,z), Point3, Color aliases; SIMD f64 layout
-├── ray.rs               — Ray { origin, direction, time }
-├── rng.rs               — Seedable RNG wrapper (deterministic rendering)
+├── ray.rs               — Ray { origin, direction, time } — parametric ray with motion blur support
+├── rng.rs               — XORShift128+ PRNG wrapper; thread-local convenience + per-row golden-ratio deterministic seeding
 ├── interval.rs          — [min, max] interval math (clamp, expand, surrounds)
 ├── aabb.rs              — Axis-Aligned Bounding Box
 ├── bvh.rs               — BVH tree (O(log n) hit test, spatial median split)
 ├── hittable.rs          — HitRecord, Hittable enum (all geometry variants)
 ├── hittable_list.rs     — Flat object list (scene root + light list)
-├── sphere.rs            — Analytic sphere: hit, pdf_value, random (solid-angle)
+├── sphere.rs            — Analytic sphere: hit, pdf_value, random (solid-angle); stationary + moving (motion blur via Ray center)
 ├── quad.rs              — Quadrilateral: hit, pdf_value, random (uniform area)
 ├── quad_box.rs          — make_box() from min/max corners (6 quads)
 ├── constant_medium.rs   — Volumetric fog (random distance sampling)
 ├── material.rs          — Material enum + scatter + scattering_pdf
-├── texture.rs           — Texture enum (SolidColor)
-├── onb.rs               — Orthonormal basis for cosine hemisphere sampling
+├── texture.rs           — Texture enum (SolidColor, Checker, Image, Noise)
+├── onb.rs               — Orthonormal basis (Frisvad method); local ↔ world direction transform
 ├── pdf.rs               — PDF enum (Sphere, Cosine, Mixture)
-├── perlin.rs            — 3D Perlin noise + turbulence
-├── color_io.rs          — linear_to_gamma, pixel_to_10bit/16bit encoding
+├── perlin.rs            — 3D Perlin noise (hermite smoothing) + turbulence (fBM)
+├── color_io.rs          — linear_to_gamma, pixel_to_8bit/10bit/16bit encoding with NaN guard
 └── cuda/
     ├── mod.rs           — CUDA feature gate
     ├── optix.rs         — Rust FFI to optix_bridge C API + GPU diagnostics
@@ -134,7 +134,7 @@ src/
         ├── miss.cu      — Miss shader (background color)
         ├── materials.h  — scatter_lambertian/metal/dielectric/isotropic
         ├── pdf.h        — Cosine PDF value, mixture PDF
-        └── random.h     — PCG-based GPU RNG
+        └── random.h     — XORShift128+ GPU RNG
 ```
 
 ### CPU Rendering Pipeline
@@ -214,6 +214,18 @@ OptiX AI HDR denoiser -> denoised output buffer
 Copy output buffer GPU -> CPU
 PNG encoding: linear_to_gamma -> 10-bit -> 16-bit (same as CPU)
 ```
+
+### GPU Data Layout
+
+Host ↔ GPU struct layout must match exactly. Static assertions in `common.h` and `optix_bridge.cu` verify sizes at compile time.
+
+| Struct | Size | Fields |
+|--------|------|--------|
+| `GpuFloat3` | 12 bytes | `float x, y, z` (4-byte alignment) |
+| `GpuMaterialData` | 36 bytes | `u32 mat_type` + `GpuFloat3 albedo` + `f32 fuzz` + `f32 ir` + `GpuFloat3 emission` |
+| `CameraParams` | 148 bytes | 11× `GpuFloat3` (lookfrom, lookat, vup, u, v, w, pixel00_loc, pixel_delta_u, pixel_delta_v, defocus_disk_u, defocus_disk_v) + 4× `f32` (vfov, aspect_ratio, defocus_angle, focus_dist) |
+
+Material type IDs: 0=Lambertian, 1=Metal, 2=Dielectric, 3=DiffuseLight, 4=Isotropic.
 
 ### Scene Construction
 
@@ -311,7 +323,18 @@ Pdf enum:
 └── Mixture(p0,p1) -> value: avg of p0,p1,  generate: random pick p0 or p1
 ```
 
-CPU `BsdfPdf` is constructed per material:
+### Texture System
+
+Textures provide surface color variation. The `Texture` enum has four variants:
+
+| Variant | Fields | Description |
+|---------|--------|-------------|
+| `SolidColor` | `Color` | Constant color at all UV/points |
+| `Checker` | `inv_scale, even, odd` | 3D procedural checkerboard (two textures alternating in 3D space) |
+| `Image` | `data, width, height` | 2D image texture loaded from file via the `image` crate |
+| `Noise` | `noise: Perlin, scale` | Perlin noise marble-like pattern with configurable scale |
+
+The CPU `BsdfPdf` is constructed per material:
 - Lambertian -> `Pdf::Cosine(&normal)`
 - Isotropic -> `Pdf::Sphere()`
 
@@ -445,18 +468,18 @@ Key test categories:
 
 | Module | Tests | What they verify |
 |--------|-------|-----------------|
-| `vec3` | 15 | Arithmetic, dot/cross, unit vector, RNG helpers |
-| `interval` | 6 | Contains, surrounds, clamp, expand |
-| `aabb` | 4 | Construction, hit test, box union |
-| `bvh` | 4 | Hit/miss, bounding box coverage, PDF positivity |
-| `sphere` | 3 | Hit center, miss, bbox, pdf_value |
+| `vec3` | 17 | Arithmetic, dot/cross, unit vector, RNG helpers, reflect/refract |
+| `interval` | 7 | Contains, surrounds, clamp, expand, add_offset |
+| `aabb` | 5 | Construction, hit test, box union, add_offset |
+| `bvh` | 5 | Hit/miss, closest-hit ordering, bounding box coverage, PDF positivity |
+| `sphere` | 4 | Hit center, miss, bbox, pdf_value |
 | `quad` | 4 | Hit center, parallel miss, bounds, pdf_value |
-| `camera` | 7 | Aspect ratio, seed determinism, gamma consistency |
-| `cuda::scene` | 11 | Tessellation, material conversion, normals, struct sizes |
+| `camera` | 9 | Aspect ratio, height, seed determinism, JSON progress, gamma consistency |
+| `cuda::scene` | 12 | Sphere/quads tessellation, normals, material conversion, transform penetration, struct sizes/offsets |
 | `cuda::optix` | 1 | CameraParams size assertion (148 bytes) |
-| `color_io` | 8 | Gamma correction, pixel encoding at various bit depths |
-| `pdf` | 5 | Sphere/cosine/mixture value and generation |
-| `perlin` | 2 | Noise range, deterministic output |
+| `color_io` | 12 | Gamma correction, all bit depths (8/10/16-bit), NaN guard, monotonicity |
+| `pdf` | 6 | Sphere/cosine/mixture value and generate, hemisphere direction |
+| `perlin` | 3 | Noise range, deterministic output, turb range |
 | `ray` | 2 | at() method |
 | `material` | (implicit) | Via camera + scene integration tests |
 
@@ -618,23 +641,23 @@ src/
 ├── lib.rs               — 模块声明，feature-gated cuda 模块
 ├── camera.rs            — CPU 渲染循环（rayon）+ GPU 渲染入口 + PNG 输出
 ├── vec3.rs              — Vec3 (x,y,z)，Point3，Color 别名；SIMD f64 布局
-├── ray.rs               — Ray { origin, direction, time }
-├── rng.rs               — 可设种子的随机数生成器（确定性渲染）
+├── ray.rs               — Ray { origin, direction, time } — 参数化光线，支持运动模糊
+├── rng.rs               — XORShift128+ PRNG 封装；线程局部便利接口 + 逐行黄金比例确定性种子
 ├── interval.rs          — [min, max] 区间运算（clamp, expand, surrounds）
 ├── aabb.rs              — 轴对齐包围盒
 ├── bvh.rs               — BVH 树（O(log n) 碰撞检测，空间中位数分割）
 ├── hittable.rs          — HitRecord，Hittable 枚举（所有几何体变体）
 ├── hittable_list.rs     — 扁平对象列表（场景根节点 + 光源列表）
-├── sphere.rs            — 解析球体：碰撞、pdf_value、random（立体角）
+├── sphere.rs            — 解析球体：碰撞、pdf_value、random（立体角）；支持静止 + 运动球体（运动模糊，通过 Ray 中心）
 ├── quad.rs              — 四边形：碰撞、pdf_value、random（均匀面积）
 ├── quad_box.rs          — make_box() 从最小/最大角点构建（6 个四边形）
 ├── constant_medium.rs   — 体积雾（随机距离采样）
 ├── material.rs          — Material 枚举 + scatter + scattering_pdf
-├── texture.rs           — Texture 枚举（SolidColor）
-├── onb.rs               — 标准正交基，用于余弦半球采样
+├── texture.rs           — Texture 枚举（SolidColor, Checker, Image, Noise）
+├── onb.rs               — 标准正交基（Frisvad 方法）；局部 ↔ 世界方向变换
 ├── pdf.rs               — PDF 枚举（Sphere, Cosine, Mixture）
-├── perlin.rs            — 3D Perlin 噪声 + turbulence
-├── color_io.rs          — linear_to_gamma，pixel_to_10bit/16bit 编码
+├── perlin.rs            — 3D Perlin 噪声（hermite 平滑）+ turbulence（fBM）
+├── color_io.rs          — linear_to_gamma，pixel_to_8bit/10bit/16bit 编码（含 NaN 保护）
 └── cuda/
     ├── mod.rs           — CUDA 特性门控
     ├── optix.rs         — Rust FFI 到 optix_bridge C API + GPU 诊断
@@ -648,7 +671,7 @@ src/
         ├── miss.cu      — 未命中着色器（背景颜色）
         ├── materials.h  — scatter_lambertian/metal/dielectric/isotropic
         ├── pdf.h        — 余弦 PDF 值，混合 PDF
-        └── random.h     — 基于 PCG 的 GPU 随机数生成器
+        └── random.h     — XORShift128+ GPU 随机数生成器
 ```
 
 ### CPU 渲染管线
@@ -728,6 +751,18 @@ OptiX AI HDR 降噪器 -> 降噪输出缓冲
 输出缓冲从 GPU 复制到 CPU
 PNG 编码：linear_to_gamma -> 10 位 -> 16 位（与 CPU 一致）
 ```
+
+### GPU 数据布局
+
+主机 ↔ GPU 结构体布局必须完全一致。`common.h` 和 `optix_bridge.cu` 中的静态断言在编译时验证大小。
+
+| 结构体 | 大小 | 字段 |
+|--------|------|------|
+| `GpuFloat3` | 12 字节 | `float x, y, z`（4 字节对齐） |
+| `GpuMaterialData` | 36 字节 | `u32 mat_type` + `GpuFloat3 albedo` + `f32 fuzz` + `f32 ir` + `GpuFloat3 emission` |
+| `CameraParams` | 148 字节 | 11× `GpuFloat3`（lookfrom, lookat, vup, u, v, w, pixel00_loc, pixel_delta_u, pixel_delta_v, defocus_disk_u, defocus_disk_v）+ 4× `f32`（vfov, aspect_ratio, defocus_angle, focus_dist）|
+
+材质类型 ID：0=Lambertian, 1=Metal, 2=Dielectric, 3=DiffuseLight, 4=Isotropic。
 
 ### 场景构建
 
@@ -824,6 +859,17 @@ Pdf 枚举：
 ├── Cosine(Onb)  -> value: cos(theta)/pi,   generate: ONB x random_cosine_direction
 └── Mixture(p0,p1) -> value: p0与p1的平均值,  generate: 随机选择 p0 或 p1
 ```
+
+### 纹理系统
+
+纹理提供表面颜色变化。`Texture` 枚举有四种变体：
+
+| 变体 | 字段 | 描述 |
+|------|------|------|
+| `SolidColor` | `Color` | 在所有 UV/点返回恒定颜色 |
+| `Checker` | `inv_scale, even, odd` | 3D 程序化棋盘格（两个纹理在 3D 空间中交替） |
+| `Image` | `data, width, height` | 通过 `image` crate 从文件加载的 2D 图像纹理 |
+| `Noise` | `noise: Perlin, scale` | Perlin 噪声大理石条纹图案，可配置缩放 |
 
 CPU 端 `BsdfPdf` 按材质构建：
 - Lambertian -> `Pdf::Cosine(&normal)`
@@ -959,18 +1005,18 @@ cargo test --features cuda
 
 | 模块 | 测试数 | 验证内容 |
 |------|--------|---------|
-| `vec3` | 15 | 算术运算、点积/叉积、单位向量、随机辅助函数 |
-| `interval` | 6 | Contains、Surrounds、Clamp、Expand |
-| `aabb` | 4 | 构建、碰撞检测、包围盒合并 |
-| `bvh` | 4 | 命中/未命中、包围盒覆盖、PDF 正值性 |
-| `sphere` | 3 | 命中球心、未命中、包围盒、pdf_value |
+| `vec3` | 17 | 算术运算、点积/叉积、单位向量、随机辅助函数、反射/折射 |
+| `interval` | 7 | Contains、Surrounds、Clamp、Expand、add_offset |
+| `aabb` | 5 | 构建、碰撞检测、包围盒合并、add_offset |
+| `bvh` | 5 | 命中/未命中、最近命中顺序、包围盒覆盖、PDF 正值性 |
+| `sphere` | 4 | 命中球心、未命中、包围盒、pdf_value |
 | `quad` | 4 | 命中中心、平行未命中、边界、pdf_value |
-| `camera` | 7 | 宽高比、种子确定性、gamma 一致性 |
-| `cuda::scene` | 11 | 细分、材质转换、法线、结构体大小 |
+| `camera` | 9 | 宽高比、高度、种子确定性、JSON 进度、gamma 一致性 |
+| `cuda::scene` | 12 | 球体/四边形细分、法线、材质转换、变换穿透、结构体大小/偏移 |
 | `cuda::optix` | 1 | CameraParams 大小断言（148 字节） |
-| `color_io` | 8 | Gamma 校正、不同位深的像素编码 |
-| `pdf` | 5 | Sphere/Cosine/Mixture 的值和生成 |
-| `perlin` | 2 | 噪声范围、确定性输出 |
+| `color_io` | 12 | Gamma 校正、所有位深（8/10/16 位）、NaN 保护、单调性 |
+| `pdf` | 6 | Sphere/Cosine/Mixture 的值和生成、半球方向 |
+| `perlin` | 3 | 噪声范围、确定性输出、turb 范围 |
 | `ray` | 2 | at() 方法 |
 | `material` | （隐式）| 通过相机和场景集成测试 |
 
