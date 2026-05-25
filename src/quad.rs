@@ -14,9 +14,9 @@ pub struct Quad {
     pub w: Vec3,
     pub mat: Material,
     pub bbox: Aabb,
-    normal: Vec3,
+    pub normal: Vec3,
     d: f64,
-    area: f64,
+    pub area: f64,
 }
 
 impl Quad {

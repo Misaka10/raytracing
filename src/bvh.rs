@@ -97,6 +97,18 @@ impl BvhNode {
             }
         }
     }
+
+    /// Visit every leaf in the BVH tree without cloning. The callback receives a
+    /// `&Hittable` reference to each leaf object.
+    pub fn visit_leaves(&self, f: &mut impl FnMut(&super::Hittable)) {
+        match self {
+            BvhNode::Leaf { object, .. } => f(object),
+            BvhNode::Split { left, right, .. } => {
+                left.visit_leaves(f);
+                right.visit_leaves(f);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

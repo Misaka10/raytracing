@@ -82,7 +82,35 @@ fn find_optix_sdk() -> Option<PathBuf> {
     None
 }
 
-fn find_msvc_bin_dir() -> Option<PathBuf> {
+/// Scan a MSVC directory for the latest version, return the bin dir path.
+fn find_latest_msvc_bin(msvc_dir: &Path, tool: &str) -> Option<PathBuf> {
+    if !msvc_dir.exists() { return None; }
+    let entries = std::fs::read_dir(msvc_dir).ok()?;
+    let mut versions: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .collect();
+    versions.sort_by_key(|e| e.file_name());
+    versions.reverse();
+    for v in versions {
+        let exe = v.path().join("bin").join("Hostx64").join("x64").join(tool);
+        if exe.exists() {
+            return Some(v.path().join("bin").join("Hostx64").join("x64"));
+        }
+    }
+    None
+}
+
+/// Find the latest MSVC tool binary path.
+fn find_msvc_tool(tool: &str) -> Option<PathBuf> {
+    // Check VSINSTALLDIR env var first (set by VS Developer Command Prompt)
+    if let Ok(vs_dir) = std::env::var("VSINSTALLDIR") {
+        let msvc_dir = Path::new(&vs_dir).join("VC").join("Tools").join("MSVC");
+        if let Some(bin) = find_latest_msvc_bin(&msvc_dir, tool) {
+            return Some(bin);
+        }
+    }
+
     // Search VS 2022 Community/Professional/Enterprise/BuildTools
     let vs_base = Path::new("C:/Program Files/Microsoft Visual Studio/2022");
     let vs_base_x86 = Path::new("C:/Program Files (x86)/Microsoft Visual Studio/2022");
@@ -91,58 +119,8 @@ fn find_msvc_bin_dir() -> Option<PathBuf> {
         if !base.exists() { continue; }
         for edition in &["Community", "Professional", "Enterprise", "BuildTools"] {
             let msvc_dir = base.join(edition).join("VC").join("Tools").join("MSVC");
-            if !msvc_dir.exists() { continue; }
-            if let Ok(entries) = std::fs::read_dir(&msvc_dir) {
-                let mut versions: Vec<_> = entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                    .collect();
-                versions.sort_by_key(|e| e.file_name());
-                versions.reverse();
-                for v in versions {
-                    let cl = v.path()
-                        .join("bin")
-                        .join("Hostx64")
-                        .join("x64")
-                        .join("cl.exe");
-                    if cl.exists() {
-                        return Some(v.path().join("bin").join("Hostx64").join("x64"));
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-fn find_msvc_lib() -> Option<String> {
-    let candidates = [
-        "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC",
-        "C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/MSVC",
-        "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/MSVC",
-    ];
-
-    for base in &candidates {
-        let p = Path::new(base);
-        if p.exists() {
-            if let Ok(entries) = std::fs::read_dir(p) {
-                let mut versions: Vec<_> = entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                    .collect();
-                versions.sort_by_key(|e| e.file_name());
-                versions.reverse();
-
-                for v in versions {
-                    let lib = v.path()
-                        .join("bin")
-                        .join("Hostx64")
-                        .join("x64")
-                        .join("lib.exe");
-                    if lib.exists() {
-                        return Some(lib.to_string_lossy().to_string());
-                    }
-                }
+            if let Some(bin) = find_latest_msvc_bin(&msvc_dir, tool) {
+                return Some(bin);
             }
         }
     }
@@ -156,32 +134,22 @@ fn find_msvc_lib() -> Option<String> {
     {
         let install_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !install_path.is_empty() {
-            let vc_path = Path::new(&install_path).join("VC").join("Tools").join("MSVC");
-            if vc_path.exists() {
-                if let Ok(entries) = std::fs::read_dir(&vc_path) {
-                    let mut versions: Vec<_> = entries
-                        .filter_map(|e| e.ok())
-                        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                        .collect();
-                    versions.sort_by_key(|e| e.file_name());
-                    versions.reverse();
-
-                    for v in versions {
-                        let lib = v.path()
-                            .join("bin")
-                            .join("Hostx64")
-                            .join("x64")
-                            .join("lib.exe");
-                        if lib.exists() {
-                            return Some(lib.to_string_lossy().to_string());
-                        }
-                    }
-                }
+            let msvc_dir = Path::new(&install_path).join("VC").join("Tools").join("MSVC");
+            if let Some(bin) = find_latest_msvc_bin(&msvc_dir, tool) {
+                return Some(bin);
             }
         }
     }
 
     None
+}
+
+fn find_msvc_bin_dir() -> Option<PathBuf> {
+    find_msvc_tool("cl.exe")
+}
+
+fn find_msvc_lib() -> Option<String> {
+    find_msvc_tool("lib.exe").map(|p| p.join("lib.exe").to_string_lossy().to_string())
 }
 
 fn main() {

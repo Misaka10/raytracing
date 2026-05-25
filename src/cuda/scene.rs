@@ -99,6 +99,15 @@ impl GpuScene {
         let cz = sphere.center.orig.z() as f32;
         let r = sphere.radius as f32;
 
+        let total_verts = (SPHERE_LAT as usize + 1) * (SPHERE_LON as usize + 1) * 3;
+        let total_indices = (SPHERE_LAT as usize) * (SPHERE_LON as usize) * 6;
+        let total_tris = (SPHERE_LAT as usize) * (SPHERE_LON as usize) * 2;
+
+        self.vertices.reserve(total_verts);
+        self.normals.reserve(total_verts);
+        self.indices.reserve(total_indices);
+        self.tri_to_material.reserve(total_tris);
+
         // Generate vertices (lat/lon grid with poles)
         for lat in 0..=SPHERE_LAT {
             let theta = std::f64::consts::PI * lat as f64 / SPHERE_LAT as f64;
@@ -148,17 +157,15 @@ impl GpuScene {
         let u = quad.u;
         let v = quad.v;
 
-        // Face normal = normalize(u × v)
-        let (ux, uy, uz) = (u.x() as f32, u.y() as f32, u.z() as f32);
-        let (vx, vy, vz) = (v.x() as f32, v.y() as f32, v.z() as f32);
-        let nx = uy * vz - uz * vy;
-        let ny = uz * vx - ux * vz;
-        let nz = ux * vy - uy * vx;
-        let n_len = (nx * nx + ny * ny + nz * nz).sqrt();
-        let n_len = if n_len > 0.0 { n_len } else { 1.0 };
-        let nx = nx / n_len;
-        let ny = ny / n_len;
-        let nz = nz / n_len;
+        // Reuse pre-computed face normal (already normalized in Quad::new)
+        let nx = quad.normal.x() as f32;
+        let ny = quad.normal.y() as f32;
+        let nz = quad.normal.z() as f32;
+
+        self.vertices.reserve(12); // 4 corners × 3 floats
+        self.normals.reserve(12);
+        self.indices.reserve(6);   // 2 triangles × 3 indices
+        self.tri_to_material.reserve(2);
 
         for corner in [q, q + u, q + v, q + u + v].iter() {
             self.vertices.push(corner.x() as f32);
@@ -286,16 +293,10 @@ impl GpuScene {
                 }
             }
             Hittable::BvhNode(bvh) => {
-                // Defensive: recurse into BVH nodes (should not appear after flatten, but handle gracefully)
-                match bvh {
-                    crate::bvh::BvhNode::Leaf { object, .. } => {
-                        self.tessellate_object(object, mat_idx);
-                    }
-                    crate::bvh::BvhNode::Split { left, right, .. } => {
-                        self.tessellate_object(&Hittable::BvhNode((**left).clone()), mat_idx);
-                        self.tessellate_object(&Hittable::BvhNode((**right).clone()), mat_idx);
-                    }
-                }
+                // Defensive: recurse into BVH nodes via reference traversal (no cloning)
+                bvh.visit_leaves(&mut |leaf| {
+                    self.tessellate_object(leaf, mat_idx);
+                });
             }
         }
     }

@@ -126,6 +126,8 @@ widthSelect.addEventListener('change', () => {
         widthInput.focus();
         updateHeight();
     } else {
+        widthSelect.style.display = 'inline-block';
+        widthInput.style.display = 'none';
         widthInput.value = val;
         updateHeight();
     }
@@ -241,9 +243,15 @@ btnStart.addEventListener('click', async () => {
         setRenderingState(false);
 
         if (msg.output) {
-            const result = await window.electronAPI.getImageData(msg.output);
-            if (result.dataUrl) {
-                displayImage(result.dataUrl);
+            try {
+                const result = await window.electronAPI.getImageData(msg.output);
+                if (result && result.dataUrl) {
+                    displayImage(result.dataUrl);
+                } else if (result && result.error) {
+                    showError(result.error);
+                }
+            } catch (_) {
+                showError('Failed to load rendered image');
             }
         }
         progressSection.style.display = 'none';
@@ -349,50 +357,61 @@ async function checkGpu() {
 // Load calibration on startup
 async function loadCalibration() {
     calStatus.textContent = 'Calibrating...';
-
-    // CPU calibration
-    const existing = await window.electronAPI.readCalibration();
-    if (existing && existing.pixel_samples_per_ms) {
-        calibration = existing;
-    } else {
-        const result = await window.electronAPI.runCalibration(false);
-        if (result && result.pixel_samples_per_ms) {
-            calibration = result;
-        } else if (result && result.fallback) {
-            calibration = { pixel_samples_per_ms: result.fallback };
+    try {
+        // CPU calibration
+        const existing = await window.electronAPI.readCalibration();
+        if (existing && existing.pixel_samples_per_ms) {
+            calibration = existing;
         } else {
-            calibration = { pixel_samples_per_ms: 200 };
-        }
-    }
-
-    // GPU calibration
-    if (gpuAvailable) {
-        const gpuExisting = await window.electronAPI.readGpuCalibration();
-        if (gpuExisting && gpuExisting.pixel_samples_per_ms) {
-            gpuCalibration = gpuExisting;
-        } else {
-            const gpuResult = await window.electronAPI.runCalibration(true);
-            if (gpuResult && gpuResult.pixel_samples_per_ms) {
-                gpuCalibration = gpuResult;
-            } else if (gpuResult && gpuResult.fallback) {
-                gpuCalibration = { pixel_samples_per_ms: gpuResult.fallback };
+            const result = await window.electronAPI.runCalibration(false);
+            if (result && result.pixel_samples_per_ms) {
+                calibration = result;
+            } else if (result && result.fallback) {
+                calibration = { pixel_samples_per_ms: result.fallback };
             } else {
-                gpuCalibration = { pixel_samples_per_ms: 10000 };
+                calibration = { pixel_samples_per_ms: 200 };
             }
         }
-    }
 
-    // Show calibration info
-    const cpuSpeed = calibration ? calibration.pixel_samples_per_ms.toFixed(0) : '?';
-    if (gpuCalibration && gpuCalibration.pixel_samples_per_ms) {
-        const gpuSpeed = gpuCalibration.pixel_samples_per_ms.toFixed(0);
-        calStatus.textContent = `CPU: ${cpuSpeed} px-ms/s | GPU: ${gpuSpeed} px-ms/s`;
-    } else {
-        calStatus.textContent = `Calibrated: ${cpuSpeed} px-samples/ms`;
+        // GPU calibration
+        if (gpuAvailable) {
+            const gpuExisting = await window.electronAPI.readGpuCalibration();
+            if (gpuExisting && gpuExisting.pixel_samples_per_ms) {
+                gpuCalibration = gpuExisting;
+            } else {
+                const gpuResult = await window.electronAPI.runCalibration(true);
+                if (gpuResult && gpuResult.pixel_samples_per_ms) {
+                    gpuCalibration = gpuResult;
+                } else if (gpuResult && gpuResult.fallback) {
+                    gpuCalibration = { pixel_samples_per_ms: gpuResult.fallback };
+                } else {
+                    gpuCalibration = { pixel_samples_per_ms: 10000 };
+                }
+            }
+        }
+
+        // Show calibration info
+        const cpuSpeed = calibration ? calibration.pixel_samples_per_ms.toFixed(0) : '?';
+        if (gpuCalibration && gpuCalibration.pixel_samples_per_ms) {
+            const gpuSpeed = gpuCalibration.pixel_samples_per_ms.toFixed(0);
+            calStatus.textContent = `CPU: ${cpuSpeed} px-ms/s | GPU: ${gpuSpeed} px-ms/s`;
+        } else {
+            calStatus.textContent = `Calibrated: ${cpuSpeed} px-samples/ms`;
+        }
+    } catch (err) {
+        calStatus.textContent = 'Calibration unavailable';
+        calibration = { pixel_samples_per_ms: 200 };
+        if (gpuAvailable) {
+            gpuCalibration = { pixel_samples_per_ms: 10000 };
+        }
     }
     updateEstimates();
 }
 
 // Init
-checkGpu().then(() => loadCalibration());
+checkGpu().then(() => loadCalibration()).catch(() => {
+    calStatus.textContent = 'Calibration unavailable';
+    calibration = { pixel_samples_per_ms: 200 };
+    updateEstimates();
+});
 updateEstimates();

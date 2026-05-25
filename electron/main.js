@@ -52,7 +52,13 @@ app.on('window-all-closed', () => {
 ipcMain.handle('read-calibration', async () => {
     const calPath = getCalibrationPath();
     if (fs.existsSync(calPath)) {
-        return JSON.parse(fs.readFileSync(calPath, 'utf8'));
+        try {
+            return JSON.parse(fs.readFileSync(calPath, 'utf8'));
+        } catch (_) {
+            // Corrupted file — delete and re-calibrate
+            try { fs.unlinkSync(calPath); } catch (__) {}
+            return null;
+        }
     }
     return null;
 });
@@ -61,7 +67,12 @@ ipcMain.handle('read-calibration', async () => {
 ipcMain.handle('read-gpu-calibration', async () => {
     const calPath = getGpuCalibrationPath();
     if (fs.existsSync(calPath)) {
-        return JSON.parse(fs.readFileSync(calPath, 'utf8'));
+        try {
+            return JSON.parse(fs.readFileSync(calPath, 'utf8'));
+        } catch (_) {
+            try { fs.unlinkSync(calPath); } catch (__) {}
+            return null;
+        }
     }
     return null;
 });
@@ -175,7 +186,6 @@ ipcMain.handle('run-calibration', async (_event, useGpu = false) => {
         '--max-depth', '5',
         '--output', calOutput,
         '--seed', '0',
-        '--json',
     ];
     if (useGpu) {
         args.push('--gpu');
@@ -184,22 +194,42 @@ ipcMain.handle('run-calibration', async (_event, useGpu = false) => {
     return new Promise((resolve) => {
         const child = spawn(binaryPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
+        let stderrOut = '';
+
+        // Drain stdout to prevent pipe buffer deadlock
+        child.stdout.on('data', () => {});
+        child.stderr.on('data', (data) => { stderrOut += data.toString(); });
+
+        // Timeout guard (30s — calibration renders 160x90x16 = 230k samples, should be <5s)
+        const timeout = setTimeout(() => {
+            child.kill();
+            resolve({ error: 'Calibration timed out (30s)', fallback: useGpu ? 10000 : 200 });
+        }, 30000);
+
+        child.on('error', () => {
+            clearTimeout(timeout);
+            resolve({ error: 'Failed to start calibration benchmark', fallback: useGpu ? 10000 : 200 });
+        });
+
         child.on('close', (code) => {
+            clearTimeout(timeout);
             const elapsedMs = Date.now() - startTime;
             if (code === 0) {
                 const pixelSamples = 160 * 90 * 16;
-                const pixelSamplesPerMs = pixelSamples / Math.max(elapsedMs, 1);
+                const pixelSamplesPerMs = Math.max(pixelSamples / Math.max(elapsedMs, 1), 0.1);
                 const calibration = {
                     pixel_samples_per_ms: Math.round(pixelSamplesPerMs * 100) / 100,
                     calibrated_at: new Date().toISOString(),
                     gpu: useGpu,
                 };
                 const calPath = useGpu ? getGpuCalibrationPath() : getCalibrationPath();
-                fs.writeFileSync(calPath, JSON.stringify(calibration, null, 2));
+                try {
+                    fs.writeFileSync(calPath, JSON.stringify(calibration, null, 2));
+                } catch (_) {}
                 try { fs.unlinkSync(calOutput); } catch (_) {}
                 resolve(calibration);
             } else {
-                resolve({ error: `Calibration failed (exit code: ${code}), using default estimate`, fallback: useGpu ? 10000 : 200 });
+                resolve({ error: `Calibration failed (exit code: ${code})`, fallback: useGpu ? 10000 : 200 });
             }
         });
     });

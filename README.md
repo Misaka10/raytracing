@@ -362,9 +362,9 @@ Normal Rust compilation via Cargo. When `--features cuda` is enabled, `build.rs`
 | Component | Parallelism |
 |-----------|-------------|
 | Cargo (rustc) | Per-crate parallelism (default: CPU cores) |
-| rustc backend | `codegen-units=16` (`.cargo/config.toml`) |
+| rustc backend | `codegen-units=1` (`.cargo/config.toml`) |
 | NVCC shaders | `std::thread::scope` — 3 shaders compiled concurrently |
-| LTO | Disabled (`lto=false`) — avoids serial link bottleneck |
+| LTO | `thin` — cross-crate inlining without serial bottleneck |
 
 Config: `.cargo/config.toml`
 ```toml
@@ -372,8 +372,10 @@ Config: `.cargo/config.toml`
 rustflags = ["-C", "target-cpu=native", "-C", "link-arg=/STACK:16777216"]
 
 [profile.release]
-codegen-units = 16
-lto = false
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
 ```
 
 ### PTX architecture
@@ -899,9 +901,9 @@ hittable_list.pdf_value() = avg(quad.pdf_value(), sphere.pdf_value())
 | 组件 | 并行方式 |
 |------|---------|
 | Cargo（rustc） | 每个 crate 并行（默认：CPU 核心数） |
-| rustc 后端 | `codegen-units=16`（`.cargo/config.toml`） |
+| rustc 后端 | `codegen-units=1`（`.cargo/config.toml`）|
 | NVCC 着色器 | `std::thread::scope` — 3 个着色器并发编译 |
-| LTO | 已禁用（`lto=false`）— 避免串行链接瓶颈 |
+| LTO | `thin` — 跨 crate 内联，无串行瓶颈 |
 
 配置：`.cargo/config.toml`
 ```toml
@@ -909,8 +911,10 @@ hittable_list.pdf_value() = avg(quad.pdf_value(), sphere.pdf_value())
 rustflags = ["-C", "target-cpu=native", "-C", "link-arg=/STACK:16777216"]
 
 [profile.release]
-codegen-units = 16
-lto = false
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
 ```
 
 ### PTX 架构

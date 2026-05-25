@@ -125,15 +125,19 @@ impl Camera {
 
     #[cfg(feature = "cuda")]
     /// Recursively search the hittable tree for the first area light quad.
-    /// Returns (corner, u, v, area_inv) in f32 for GPU upload.
+    /// Uses BVH reference traversal (visit_leaves) to avoid subtree cloning.
     fn find_light_quad(&self, hittable: &Hittable) -> Option<([f32; 3], [f32; 3], [f32; 3], f32)> {
+        self.find_light_quad_inner(hittable, true)
+    }
+
+    #[cfg(feature = "cuda")]
+    fn find_light_quad_inner(&self, hittable: &Hittable, is_root: bool) -> Option<([f32; 3], [f32; 3], [f32; 3], f32)> {
         match hittable {
             Hittable::Quad(q) => {
                 if matches!(&q.mat, crate::material::Material::DiffuseLight { .. }) {
                     let corner = [q.q.x() as f32, q.q.y() as f32, q.q.z() as f32];
                     let u = [q.u.x() as f32, q.u.y() as f32, q.u.z() as f32];
                     let v = [q.v.x() as f32, q.v.y() as f32, q.v.z() as f32];
-                    // area = |u × v|
                     let cross = [
                         u[1] * v[2] - u[2] * v[1],
                         u[2] * v[0] - u[0] * v[2],
@@ -146,23 +150,42 @@ impl Camera {
                 None
             }
             Hittable::HittableList(list) => {
-                for obj in &list.objects {
-                    let result = self.find_light_quad(obj);
-                    if result.is_some() { return result; }
+                if is_root {
+                    // BVH-wrapped at root: use visit_leaves for O(n) reference traversal
+                    for obj in &list.objects {
+                        if let Hittable::BvhNode(bvh) = obj {
+                            let mut result = None;
+                            bvh.visit_leaves(&mut |leaf| {
+                                if result.is_none() {
+                                    result = self.find_light_quad_inner(leaf, false);
+                                }
+                            });
+                            if result.is_some() { return result; }
+                        } else {
+                            let result = self.find_light_quad_inner(obj, false);
+                            if result.is_some() { return result; }
+                        }
+                    }
+                    None
+                } else {
+                    for obj in &list.objects {
+                        let result = self.find_light_quad_inner(obj, false);
+                        if result.is_some() { return result; }
+                    }
+                    None
                 }
-                None
             }
             Hittable::BvhNode(bvh) => {
-                match bvh {
-                    crate::bvh::BvhNode::Leaf { object, .. } => self.find_light_quad(object.as_ref()),
-                    crate::bvh::BvhNode::Split { left, right, .. } => {
-                        self.find_light_quad(&Hittable::BvhNode((**left).clone()))
-                            .or_else(|| self.find_light_quad(&Hittable::BvhNode((**right).clone())))
+                let mut result = None;
+                bvh.visit_leaves(&mut |leaf| {
+                    if result.is_none() {
+                        result = self.find_light_quad_inner(leaf, false);
                     }
-                }
+                });
+                result
             }
             Hittable::Translate(inner, offset, _) => {
-                self.find_light_quad(inner).map(|(corner, u, v, area_inv)| {
+                self.find_light_quad_inner(inner, false).map(|(corner, u, v, area_inv)| {
                     let ox = offset.x() as f32;
                     let oy = offset.y() as f32;
                     let oz = offset.z() as f32;
@@ -170,7 +193,7 @@ impl Camera {
                 })
             }
             Hittable::RotateY(inner, sin_theta, cos_theta, _) => {
-                self.find_light_quad(inner).map(|(corner, u, v, area_inv)| {
+                self.find_light_quad_inner(inner, false).map(|(corner, u, v, area_inv)| {
                     let st = *sin_theta as f32;
                     let ct = *cos_theta as f32;
                     let rotate = |p: [f32; 3]| -> [f32; 3] {
@@ -185,7 +208,7 @@ impl Camera {
 
     #[cfg(feature = "cuda")]
     /// Recursively search the hittable tree for the glass sphere (dielectric material).
-    /// Returns (center, radius) in f32 for GPU MIS direction sampling.
+    /// Uses BVH reference traversal (visit_leaves) to avoid subtree cloning.
     fn find_glass_sphere(&self, hittable: &Hittable) -> Option<([f32; 3], f32)> {
         match hittable {
             Hittable::Sphere(s) => {
@@ -198,19 +221,41 @@ impl Camera {
             }
             Hittable::HittableList(list) => {
                 for obj in &list.objects {
-                    let result = self.find_glass_sphere(obj);
-                    if result.is_some() { return result; }
+                    if let Hittable::BvhNode(bvh) = obj {
+                        let mut result = None;
+                        bvh.visit_leaves(&mut |leaf| {
+                            if result.is_none() {
+                                if let Hittable::Sphere(s) = leaf {
+                                    if matches!(&s.mat, crate::material::Material::Dielectric { .. }) {
+                                        let center = [s.center.orig.x() as f32, s.center.orig.y() as f32, s.center.orig.z() as f32];
+                                        let radius = s.radius as f32;
+                                        result = Some((center, radius));
+                                    }
+                                }
+                            }
+                        });
+                        if result.is_some() { return result; }
+                    } else {
+                        let result = self.find_glass_sphere(obj);
+                        if result.is_some() { return result; }
+                    }
                 }
                 None
             }
             Hittable::BvhNode(bvh) => {
-                match bvh {
-                    crate::bvh::BvhNode::Leaf { object, .. } => self.find_glass_sphere(object.as_ref()),
-                    crate::bvh::BvhNode::Split { left, right, .. } => {
-                        self.find_glass_sphere(&Hittable::BvhNode((**left).clone()))
-                            .or_else(|| self.find_glass_sphere(&Hittable::BvhNode((**right).clone())))
+                let mut result = None;
+                bvh.visit_leaves(&mut |leaf| {
+                    if result.is_none() {
+                        if let Hittable::Sphere(s) = leaf {
+                            if matches!(&s.mat, crate::material::Material::Dielectric { .. }) {
+                                let center = [s.center.orig.x() as f32, s.center.orig.y() as f32, s.center.orig.z() as f32];
+                                let radius = s.radius as f32;
+                                result = Some((center, radius));
+                            }
+                        }
                     }
-                }
+                });
+                result
             }
             _ => None,
         }
