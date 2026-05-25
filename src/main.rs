@@ -49,10 +49,18 @@ struct Args {
     /// GPU 诊断：检测 CUDA 驱动/OptiX 是否可用，输出 JSON 后退出
     #[arg(long, default_value_t = false)]
     check_gpu: bool,
+
+    /// 校准模式：渲染后输出吞吐量 JSON，抑制进度输出
+    #[arg(long, default_value_t = false)]
+    calibrate: bool,
 }
 
 fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    // --calibrate 隐含 --json（抑制 progress bar，仅输出校准 JSON）
+    if args.calibrate {
+        args.json = true;
+    }
 
     // 初始化 rayon 线程池，增大栈空间防止递归 ray_color 爆栈
     rayon::ThreadPoolBuilder::new()
@@ -158,11 +166,11 @@ fn main() -> anyhow::Result<()> {
 
     if args.gpu {
         #[cfg(feature = "cuda")]
-        cam.render_gpu(&world_hittable, &args.output, args.seed, args.denoise)?;
+        cam.render_gpu(&world_hittable, &args.output, args.seed, args.denoise, args.calibrate)?;
         #[cfg(not(feature = "cuda"))]
         anyhow::bail!("GPU support requires --features cuda. Rebuild with: cargo build --release --features cuda");
     } else {
-        cam.render(&world_hittable, &lights_hittable, &args.output, args.seed, args.json)?;
+        cam.render(&world_hittable, &lights_hittable, &args.output, args.seed, args.json, args.calibrate)?;
     }
 
     Ok(())

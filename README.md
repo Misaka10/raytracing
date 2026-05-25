@@ -90,6 +90,7 @@ Options:
   --denoise           Enable OptiX AI denoiser (GPU only)
   --json              Output JSON progress lines for IPC (used by Electron)
   --check-gpu         GPU diagnostics: probe driver, device, OptiX, then exit
+  --calibrate         Self-timed calibration: suppress progress, output throughput JSON to stdout
 ```
 
 ---
@@ -629,6 +630,7 @@ rt-next-week.exe [选项]
   --denoise           启用 OptiX AI 降噪器（仅 GPU）
   --json              输出 JSON 进度行用于 IPC（Electron 使用）
   --check-gpu         GPU 诊断：检测驱动、设备、OptiX 后退出
+  --calibrate         自测时校准模式：抑制进度输出，输出吞吐量 JSON 到 stdout
 ```
 
 ---

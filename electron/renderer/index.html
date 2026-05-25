@@ -4,41 +4,41 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: file:; style-src 'self' 'unsafe-inline'; script-src 'self'">
-    <title>RT Renderer</title>
+    <title>RT 渲染器</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div id="app">
         <!-- Left Panel: Controls -->
         <div id="controls">
-            <h1>RT Renderer</h1>
-            <p class="subtitle">Monte Carlo Path Tracer</p>
+            <h1>RT 渲染器</h1>
+            <p class="subtitle">蒙特卡洛路径追踪器</p>
 
             <div class="section">
-                <h2>Renderer</h2>
+                <h2>渲染器</h2>
                 <div class="radio-group" id="renderer-mode">
                     <label class="radio-label">
                         <input type="radio" name="renderer" value="cpu" checked>
-                        <span>CPU (rayon)</span>
+                        <span>CPU (多线程)</span>
                     </label>
                     <label class="radio-label" id="gpu-label">
                         <input type="radio" name="renderer" value="gpu">
-                        <span>GPU (OptiX RT Core)</span>
+                        <span>GPU (OptiX 光追核心)</span>
                     </label>
                 </div>
                 <div id="gpu-status" class="hint" style="display:none;"></div>
                 <div class="checkbox-row" id="denoise-row" style="display:none;">
                     <label class="checkbox-label">
                         <input type="checkbox" id="denoise">
-                        <span>AI Denoise (Tensor Core)</span>
+                        <span>AI 降噪 (Tensor Core)</span>
                     </label>
                 </div>
             </div>
 
             <div class="section">
-                <h2>Resolution</h2>
+                <h2>分辨率</h2>
                 <div class="field">
-                    <label for="width">Width</label>
+                    <label for="width">宽度</label>
                     <div class="input-row">
                         <select id="width-preset">
                             <option value="3840">3840 (4K)</option>
@@ -48,30 +48,30 @@
                             <option value="800">800</option>
                             <option value="640">640</option>
                             <option value="320">320</option>
-                            <option value="custom">Custom</option>
+                            <option value="custom">自定义</option>
                         </select>
                         <input type="number" id="width" value="3840" min="10" max="16384" style="display:none;">
                     </div>
                 </div>
                 <div class="field">
-                    <label for="height">Height <span class="hint">(auto, ratio-locked)</span></label>
+                    <label for="height">高度 <span class="hint">(自动，比例锁定)</span></label>
                     <input type="number" id="height" value="2160" readonly disabled>
                 </div>
                 <div class="field">
-                    <label for="aspect-ratio">Aspect Ratio</label>
+                    <label for="aspect-ratio">宽高比</label>
                     <select id="aspect-ratio">
                         <option value="1.777777">16:9</option>
                         <option value="1.333333">4:3</option>
                         <option value="1.5">3:2</option>
-                        <option value="1.0">1:1 (Square)</option>
+                        <option value="1.0">1:1 (方形)</option>
                     </select>
                 </div>
             </div>
 
             <div class="section">
-                <h2>Quality</h2>
+                <h2>质量</h2>
                 <div class="field">
-                    <label for="samples">Samples per Pixel: <strong id="samples-val">400</strong></label>
+                    <label for="samples">每像素采样数: <strong id="samples-val">400</strong></label>
                     <div class="slider-row">
                         <input type="range" id="samples" min="1" max="2000" value="400" step="1">
                     </div>
@@ -84,33 +84,33 @@
                     </div>
                 </div>
                 <div class="field">
-                    <label for="max-depth">Max Bounces: <strong id="depth-val">75</strong></label>
+                    <label for="max-depth">最大反弹深度: <strong id="depth-val">75</strong></label>
                     <div class="slider-row">
                         <input type="range" id="max-depth" min="1" max="200" value="75" step="1">
                     </div>
                 </div>
                 <div class="field">
-                    <label for="seed">Seed <span class="hint">(empty = random)</span></label>
-                    <input type="text" id="seed" placeholder="Random" pattern="[0-9]*">
+                    <label for="seed">随机种子 <span class="hint">(留空 = 随机)</span></label>
+                    <input type="text" id="seed" placeholder="随机" pattern="[0-9]*">
                 </div>
             </div>
 
             <div class="section" id="estimate-panel">
-                <h2>Estimate</h2>
+                <h2>预估</h2>
                 <div id="estimate-time" class="estimate-item">
-                    <span class="estimate-label">Est. time:</span>
+                    <span class="estimate-label">预计时间：</span>
                     <span id="time-value" class="estimate-value">--</span>
                 </div>
                 <div id="estimate-memory" class="estimate-item">
-                    <span class="estimate-label">Est. memory:</span>
+                    <span class="estimate-label">预计内存：</span>
                     <span id="memory-value" class="estimate-value">--</span>
                 </div>
-                <div id="calibration-status" class="hint">Calibrating...</div>
+                <div id="calibration-status" class="hint">校准中...</div>
             </div>
 
             <div class="section" id="actions">
-                <button id="btn-start" class="btn btn-start">Start Render</button>
-                <button id="btn-cancel" class="btn btn-cancel" style="display:none;">Cancel</button>
+                <button id="btn-start" class="btn btn-start">开始渲染</button>
+                <button id="btn-cancel" class="btn btn-cancel" style="display:none;">取消</button>
             </div>
 
             <div id="error-display" class="error-msg" style="display:none;"></div>
@@ -121,9 +121,9 @@
             <div id="image-container">
                 <div id="placeholder">
                     <div class="placeholder-icon">&#9632;</div>
-                    <p>Rendered image will appear here</p>
+                    <p>渲染图像将显示在此处</p>
                 </div>
-                <img id="output-image" alt="Rendered output" style="display:none;">
+                <img id="output-image" alt="渲染输出" style="display:none;">
             </div>
             <!-- Progress Bar -->
             <div id="progress-section" style="display:none;">
@@ -132,7 +132,7 @@
                 </div>
                 <div id="progress-text">
                     <span id="progress-percent">0%</span>
-                    <span id="progress-eta">ETA: --</span>
+                    <span id="progress-eta">预计剩余: --</span>
                 </div>
             </div>
         </div>

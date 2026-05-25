@@ -94,7 +94,7 @@ function updateEstimates() {
 }
 
 function formatDuration(ms) {
-    if (ms < 1000) return '< 1s';
+    if (ms < 1000) return '不到 1 秒';
     if (ms < 60000) return `~${Math.round(ms / 1000)}s`;
     const mins = Math.floor(ms / 60000);
     const hrs = Math.floor(mins / 60);
@@ -190,15 +190,15 @@ btnStart.addEventListener('click', async () => {
     const denoise = gpu && denoiseCheck.checked;
 
     if (isNaN(width) || width < 10 || width > 16384) {
-        showError('Width must be between 10 and 16384');
+        showError('宽度必须在 10 到 16384 之间');
         return;
     }
     if (isNaN(samples) || samples < 1) {
-        showError('Samples must be at least 1');
+        showError('采样数必须至少为 1');
         return;
     }
     if (seedRaw !== '' && (isNaN(seed) || seed < 0)) {
-        showError('Seed must be a non-negative integer or empty for random');
+        showError('种子必须为非负整数，留空则使用随机值');
         return;
     }
 
@@ -207,7 +207,7 @@ btnStart.addEventListener('click', async () => {
     progressSection.style.display = 'block';
     progressBar.style.width = '0%';
     progressPercent.textContent = '0%';
-    progressEta.textContent = 'ETA: --';
+    progressEta.textContent = '预计剩余: --';
     renderStartTime = Date.now();
 
     // Remove old event listeners
@@ -228,7 +228,7 @@ btnStart.addEventListener('click', async () => {
             if (msg.completed > 0 && elapsed > 500) {
                 const totalMs = elapsed * (msg.total / msg.completed);
                 const remaining = totalMs - elapsed;
-                progressEta.textContent = 'ETA: ' + formatDuration(remaining);
+                progressEta.textContent = '预计剩余: ' + formatDuration(remaining);
             }
         } else if (msg.type === 'done') {
             // handled by onDone
@@ -239,7 +239,7 @@ btnStart.addEventListener('click', async () => {
     window.electronAPI.onDone(async (msg) => {
         progressBar.style.width = '100%';
         progressPercent.textContent = '100%';
-        progressEta.textContent = 'Done';
+        progressEta.textContent = '完成';
         setRenderingState(false);
 
         if (msg.output) {
@@ -251,7 +251,7 @@ btnStart.addEventListener('click', async () => {
                     showError(result.error);
                 }
             } catch (_) {
-                showError('Failed to load rendered image');
+                showError('加载渲染图像失败');
             }
         }
         progressSection.style.display = 'none';
@@ -260,7 +260,7 @@ btnStart.addEventListener('click', async () => {
     // Listen for error
     window.electronAPI.onError((msg) => {
         setRenderingState(false);
-        showError(msg.message || 'An unknown error occurred');
+        showError(msg.message || '发生未知错误');
         progressSection.style.display = 'none';
     });
 
@@ -323,7 +323,7 @@ function displayImage(dataUrl) {
 // GPU detection
 async function checkGpu() {
     gpuStatus.style.display = 'block';
-    gpuStatus.textContent = 'Checking GPU...';
+    gpuStatus.textContent = '正在检查 GPU...';
     const result = await window.electronAPI.checkGpu();
     if (result && result.available) {
         gpuAvailable = true;
@@ -332,8 +332,8 @@ async function checkGpu() {
         const driver = result.driver_version || '?';
         const vramGb = result.vram_mb ? (result.vram_mb / 1024).toFixed(1) : '?';
         const label = result.optix_available
-            ? `GPU: ${deviceName} (CC ${cc}, ${vramGb} GB, driver ${driver}) [RT Core + OptiX]`
-            : `GPU: ${deviceName} (CUDA only, no OptiX)`;
+            ? `GPU: ${deviceName} (CC ${cc}, ${vramGb} GB, 驱动 ${driver}) [RT Core + OptiX]`
+            : `GPU: ${deviceName} (仅 CUDA，无 OptiX)`;
         gpuStatus.textContent = label;
         gpuStatus.className = 'hint gpu-ok';
         gpuLabel.style.opacity = '1';
@@ -346,17 +346,17 @@ async function checkGpu() {
     } else {
         gpuAvailable = false;
         gpuRadio.disabled = true;
-        const errMsg = (result && result.error) ? result.error : 'GPU not available';
+        const errMsg = (result && result.error) ? result.error : 'GPU 不可用';
         gpuStatus.textContent = errMsg;
         gpuStatus.className = 'hint gpu-error';
         gpuLabel.style.opacity = '0.5';
-        gpuLabel.title = 'GPU unavailable — build with --features cuda or install CUDA driver';
+        gpuLabel.title = 'GPU 不可用 — 请使用 --features cuda 编译或安装 CUDA 驱动';
     }
 }
 
 // Load calibration on startup
 async function loadCalibration() {
-    calStatus.textContent = 'Calibrating...';
+    calStatus.textContent = '校准中...';
     try {
         // CPU calibration
         const existing = await window.electronAPI.readCalibration();
@@ -369,7 +369,7 @@ async function loadCalibration() {
             } else if (result && result.fallback) {
                 calibration = { pixel_samples_per_ms: result.fallback };
             } else {
-                calibration = { pixel_samples_per_ms: 200 };
+                calibration = { pixel_samples_per_ms: 500 };
             }
         }
 
@@ -385,7 +385,7 @@ async function loadCalibration() {
                 } else if (gpuResult && gpuResult.fallback) {
                     gpuCalibration = { pixel_samples_per_ms: gpuResult.fallback };
                 } else {
-                    gpuCalibration = { pixel_samples_per_ms: 10000 };
+                    gpuCalibration = { pixel_samples_per_ms: 50000 };
                 }
             }
         }
@@ -394,12 +394,12 @@ async function loadCalibration() {
         const cpuSpeed = calibration ? calibration.pixel_samples_per_ms.toFixed(0) : '?';
         if (gpuCalibration && gpuCalibration.pixel_samples_per_ms) {
             const gpuSpeed = gpuCalibration.pixel_samples_per_ms.toFixed(0);
-            calStatus.textContent = `CPU: ${cpuSpeed} px-ms/s | GPU: ${gpuSpeed} px-ms/s`;
+            calStatus.textContent = `CPU: ${cpuSpeed} px-samples/ms | GPU: ${gpuSpeed} px-samples/ms`;
         } else {
-            calStatus.textContent = `Calibrated: ${cpuSpeed} px-samples/ms`;
+            calStatus.textContent = `已校准: ${cpuSpeed} px-samples/ms`;
         }
     } catch (err) {
-        calStatus.textContent = 'Calibration unavailable';
+        calStatus.textContent = '校准不可用';
         calibration = { pixel_samples_per_ms: 200 };
         if (gpuAvailable) {
             gpuCalibration = { pixel_samples_per_ms: 10000 };
@@ -410,7 +410,7 @@ async function loadCalibration() {
 
 // Init
 checkGpu().then(() => loadCalibration()).catch(() => {
-    calStatus.textContent = 'Calibration unavailable';
+    calStatus.textContent = '校准不可用';
     calibration = { pixel_samples_per_ms: 200 };
     updateEstimates();
 });

@@ -262,7 +262,7 @@ impl Camera {
     }
 
     #[cfg(feature = "cuda")]
-    pub fn render_gpu(&self, world: &Hittable, output_path: &str, seed: Option<u64>, denoise: bool) -> anyhow::Result<()> {
+    pub fn render_gpu(&self, world: &Hittable, output_path: &str, seed: Option<u64>, denoise: bool, calibrate: bool) -> anyhow::Result<()> {
         use crate::cuda::optix::{self, BridgeCameraParams, OptiXBridge};
         use crate::cuda::scene::GpuScene;
 
@@ -299,6 +299,8 @@ impl Camera {
         if !bridge.build_accel(&gpu_scene.vertices, &gpu_scene.indices, &gpu_scene.normals, tri_count, vertex_count) {
             anyhow::bail!("Failed to build BVH: {}", bridge.get_error());
         }
+
+        let gpu_render_start = if calibrate { Some(std::time::Instant::now()) } else { None };
 
         // Upload materials
         if !bridge.set_materials(&gpu_scene.materials) {
@@ -349,7 +351,9 @@ impl Camera {
         let output_size = w * h * 3;
         let mut output = vec![0.0f32; output_size];
 
-        eprintln!("Rendering GPU {}x{} with {} spp...", w, h, spp);
+        if !calibrate {
+            eprintln!("Rendering GPU {}x{} with {} spp...", w, h, spp);
+        }
         if !bridge.render(&mut output, &cam, seed as u32) {
             anyhow::bail!("GPU render failed: {}", bridge.get_error());
         }
@@ -365,11 +369,20 @@ impl Camera {
         // Convert float buffer to 16-bit PNG
         save_png_gpu(output_path, w as u32, h as u32, &output)?;
 
-        eprintln!("Wrote {}", output_path);
+        if let Some(start) = gpu_render_start {
+            let elapsed = start.elapsed();
+            let total_pixel_samples = (w * h * spp as usize) as f64;
+            let px_per_ms = total_pixel_samples / (elapsed.as_secs_f64() * 1000.0);
+            println!("{}", serde_json::to_string(&serde_json::json!({
+                "pixel_samples_per_ms": px_per_ms,
+            })).unwrap());
+        } else {
+            eprintln!("Wrote {}", output_path);
+        }
         Ok(())
     }
 
-    pub fn render(&self, world: &Hittable, lights: &Hittable, output_path: &str, seed: Option<u64>, json_progress: bool) -> anyhow::Result<()> {
+    pub fn render(&self, world: &Hittable, lights: &Hittable, output_path: &str, seed: Option<u64>, json_progress: bool, calibrate: bool) -> anyhow::Result<()> {
         let lights_list = match lights {
             Hittable::HittableList(l) => l,
             _ => anyhow::bail!("lights must be HittableList"),
@@ -379,20 +392,22 @@ impl Camera {
         let h = self.image_height as usize;
         let total_pixels = w * h;
 
-        if json_progress {
-            let msg = json!({
-                "type": "start",
-                "width": w,
-                "height": h,
-                "samples": self.samples_per_pixel,
-                "max_depth": self.max_depth,
-            });
-            println!("{}", serde_json::to_string(&msg).unwrap());
-        } else {
-            println!("Rendering {}x{} with {} spp, {} bounces...", w, h, self.samples_per_pixel, self.max_depth);
+        if !calibrate {
+            if json_progress {
+                let msg = json!({
+                    "type": "start",
+                    "width": w,
+                    "height": h,
+                    "samples": self.samples_per_pixel,
+                    "max_depth": self.max_depth,
+                });
+                println!("{}", serde_json::to_string(&msg).unwrap());
+            } else {
+                println!("Rendering {}x{} with {} spp, {} bounces...", w, h, self.samples_per_pixel, self.max_depth);
+            }
         }
 
-        let pb = if json_progress {
+        let pb = if json_progress || calibrate {
             None
         } else {
             let bar = ProgressBar::new(total_pixels as u64);
@@ -406,6 +421,7 @@ impl Camera {
         };
 
         let counter = AtomicUsize::new(0);
+        let render_start = if calibrate { Some(std::time::Instant::now()) } else { None };
 
         // Golden ratio constant for deriving per-row seeds
         const GOLDEN_RATIO_U64: u64 = 0x9e3779b97f4a7c15;
@@ -432,7 +448,9 @@ impl Camera {
                 }
 
                 let done = counter.fetch_add(w, Ordering::Relaxed) + w;
-                if json_progress {
+                if calibrate {
+                    // no per-row output during calibration
+                } else if json_progress {
                     let msg = json!({
                         "type": "progress",
                         "completed": done,
@@ -452,7 +470,14 @@ impl Camera {
 
         save_png(output_path, w as u32, h as u32, &pixel_data)?;
 
-        if json_progress {
+        if let Some(start) = render_start {
+            let elapsed = start.elapsed();
+            let total_pixel_samples = (total_pixels * self.samples_per_pixel as usize) as f64;
+            let px_per_ms = total_pixel_samples / (elapsed.as_secs_f64() * 1000.0);
+            println!("{}", serde_json::to_string(&json!({
+                "pixel_samples_per_ms": px_per_ms,
+            })).unwrap());
+        } else if json_progress {
             let msg = json!({
                 "type": "done",
                 "output": output_path,
@@ -650,7 +675,7 @@ mod tests {
         let out = std::env::temp_dir().join("rt_test_nopanic.png");
         let out_path = out.to_str().unwrap();
 
-        let result = cam.render(&world, &lights, out_path, Some(42), false);
+        let result = cam.render(&world, &lights, out_path, Some(42), false, false);
         assert!(result.is_ok());
         assert!(out.exists());
         let _ = fs::remove_file(&out);
@@ -665,8 +690,8 @@ mod tests {
         let pa = out_a.to_str().unwrap();
         let pb = out_b.to_str().unwrap();
 
-        cam.render(&world, &lights, pa, Some(42), false).unwrap();
-        cam.render(&world, &lights, pb, Some(42), false).unwrap();
+        cam.render(&world, &lights, pa, Some(42), false, false).unwrap();
+        cam.render(&world, &lights, pb, Some(42), false, false).unwrap();
 
         let bytes_a = fs::read(&out_a).unwrap();
         let bytes_b = fs::read(&out_b).unwrap();
@@ -683,7 +708,7 @@ mod tests {
         let out = std::env::temp_dir().join("rt_test_json.png");
         let out_path = out.to_str().unwrap();
 
-        let result = cam.render(&world, &lights, out_path, Some(42), true);
+        let result = cam.render(&world, &lights, out_path, Some(42), true, false);
         assert!(result.is_ok());
         assert!(out.exists());
         let _ = fs::remove_file(&out);
@@ -696,7 +721,7 @@ mod tests {
         let out = std::env::temp_dir().join("rt_test_noseed.png");
         let out_path = out.to_str().unwrap();
 
-        let result = cam.render(&world, &lights, out_path, None, false);
+        let result = cam.render(&world, &lights, out_path, None, false, false);
         assert!(result.is_ok());
         assert!(out.exists());
         let _ = fs::remove_file(&out);

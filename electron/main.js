@@ -147,13 +147,13 @@ ipcMain.handle('check-gpu', async () => {
                 if (stderrLower.includes('cuda feature') || stderrLower.includes('built without')) {
                     resolve({
                         available: false,
-                        error: 'Binary built without CUDA feature. Rebuild with --features cuda.',
+                        error: '二进制文件未启用 CUDA 功能。请使用 --features cuda 重新编译。',
                         device_name: null,
                     });
                 } else if (code === null) {
                     resolve({
                         available: false,
-                        error: 'GPU check timed out (15s)',
+                        error: 'GPU 检查超时 (15 秒)',
                         device_name: null,
                     });
                 } else {
@@ -173,19 +173,24 @@ ipcMain.handle('check-gpu', async () => {
 ipcMain.handle('run-calibration', async (_event, useGpu = false) => {
     const binaryPath = getRustBinaryPath();
     if (!fs.existsSync(binaryPath)) {
-        return { error: `Rust binary not found: ${binaryPath}` };
+        return { error: `找不到 Rust 二进制文件: ${binaryPath}` };
     }
 
     const calOutput = path.join(app.getPath('temp'), 'rt_calibration.png');
-    const startTime = Date.now();
+
+    // 使用更大的校准负载以减少固定开销占比
+    const width = useGpu ? 640 : 320;
+    const height = useGpu ? 360 : 180;
+    const samples = useGpu ? 4 : 8;
 
     const args = [
-        '--width', '160',
-        '--height', '90',
-        '--samples', '16',
+        '--width', String(width),
+        '--height', String(height),
+        '--samples', String(samples),
         '--max-depth', '5',
         '--output', calOutput,
         '--seed', '0',
+        '--calibrate',
     ];
     if (useGpu) {
         args.push('--gpu');
@@ -194,42 +199,70 @@ ipcMain.handle('run-calibration', async (_event, useGpu = false) => {
     return new Promise((resolve) => {
         const child = spawn(binaryPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
+        let stdoutOut = '';
         let stderrOut = '';
 
-        // Drain stdout to prevent pipe buffer deadlock
-        child.stdout.on('data', () => {});
+        child.stdout.on('data', (data) => { stdoutOut += data.toString(); });
         child.stderr.on('data', (data) => { stderrOut += data.toString(); });
 
-        // Timeout guard (30s — calibration renders 160x90x16 = 230k samples, should be <5s)
         const timeout = setTimeout(() => {
             child.kill();
-            resolve({ error: 'Calibration timed out (30s)', fallback: useGpu ? 10000 : 200 });
-        }, 30000);
+            resolve({ error: '校准超时 (60 秒)', fallback: useGpu ? 50000 : 500 });
+        }, 60000);
 
         child.on('error', () => {
             clearTimeout(timeout);
-            resolve({ error: 'Failed to start calibration benchmark', fallback: useGpu ? 10000 : 200 });
+            resolve({ error: '无法启动校准基准测试', fallback: useGpu ? 50000 : 500 });
         });
 
         child.on('close', (code) => {
             clearTimeout(timeout);
-            const elapsedMs = Date.now() - startTime;
             if (code === 0) {
-                const pixelSamples = 160 * 90 * 16;
-                const pixelSamplesPerMs = Math.max(pixelSamples / Math.max(elapsedMs, 1), 0.1);
-                const calibration = {
-                    pixel_samples_per_ms: Math.round(pixelSamplesPerMs * 100) / 100,
-                    calibrated_at: new Date().toISOString(),
-                    gpu: useGpu,
-                };
-                const calPath = useGpu ? getGpuCalibrationPath() : getCalibrationPath();
-                try {
-                    fs.writeFileSync(calPath, JSON.stringify(calibration, null, 2));
-                } catch (_) {}
-                try { fs.unlinkSync(calOutput); } catch (_) {}
-                resolve(calibration);
+                // 从 stdout 解析校准 JSON
+                let pixelSamplesPerMs = null;
+                for (const line of stdoutOut.split('\n')) {
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
+                    try {
+                        const parsed = JSON.parse(trimmed);
+                        if (typeof parsed.pixel_samples_per_ms === 'number') {
+                            pixelSamplesPerMs = parsed.pixel_samples_per_ms;
+                            break;
+                        }
+                    } catch (_) {}
+                }
+                // 如果 stdout 没有，尝试 stderr（GPU eprintln 调试输出可能混杂）
+                if (pixelSamplesPerMs === null) {
+                    for (const line of stderrOut.split('\n')) {
+                        const trimmed = line.trim();
+                        if (!trimmed) continue;
+                        try {
+                            const parsed = JSON.parse(trimmed);
+                            if (typeof parsed.pixel_samples_per_ms === 'number') {
+                                pixelSamplesPerMs = parsed.pixel_samples_per_ms;
+                                break;
+                            }
+                        } catch (_) {}
+                    }
+                }
+
+                if (pixelSamplesPerMs !== null) {
+                    const calibration = {
+                        pixel_samples_per_ms: Math.round(pixelSamplesPerMs * 100) / 100,
+                        calibrated_at: new Date().toISOString(),
+                        gpu: useGpu,
+                    };
+                    const calPath = useGpu ? getGpuCalibrationPath() : getCalibrationPath();
+                    try {
+                        fs.writeFileSync(calPath, JSON.stringify(calibration, null, 2));
+                    } catch (_) {}
+                    try { fs.unlinkSync(calOutput); } catch (_) {}
+                    resolve(calibration);
+                } else {
+                    resolve({ error: '校准输出中未找到有效数据', fallback: useGpu ? 50000 : 500 });
+                }
             } else {
-                resolve({ error: `Calibration failed (exit code: ${code})`, fallback: useGpu ? 10000 : 200 });
+                resolve({ error: `校准失败 (退出码: ${code})`, fallback: useGpu ? 50000 : 500 });
             }
         });
     });
@@ -238,12 +271,12 @@ ipcMain.handle('run-calibration', async (_event, useGpu = false) => {
 // Start render
 ipcMain.handle('start-render', async (_event, config) => {
     if (renderProcess) {
-        return { error: 'A render is already in progress. Please wait or cancel it.' };
+        return { error: '正在渲染中，请等待或取消当前渲染。' };
     }
 
     const binaryPath = getRustBinaryPath();
     if (!fs.existsSync(binaryPath)) {
-        return { error: `Renderer binary not found: ${binaryPath}\nPlease build first: cargo build --release` };
+        return { error: `找不到渲染器二进制文件: ${binaryPath}\n请先编译: cargo build --release` };
     }
 
     const outputPath = config.output || path.join(app.getPath('temp'), 'rt_render_output.png');
@@ -309,7 +342,7 @@ ipcMain.handle('start-render', async (_event, config) => {
 
         renderProcess.on('error', (err) => {
             renderProcess = null;
-            resolve({ error: `Failed to start renderer: ${err.message}` });
+            resolve({ error: `渲染器启动失败: ${err.message}` });
         });
 
         renderProcess.on('close', (code) => {
@@ -325,10 +358,10 @@ ipcMain.handle('start-render', async (_event, config) => {
                         ? '\nEngine output:\n' + stderrLines.slice(-10).join('\n')
                         : '';
                     const exitMsg = code === null
-                        ? 'Render process terminated by signal'
-                        : `Renderer exited abnormally (exit code: ${code})`;
+                        ? '渲染进程被信号终止'
+                        : `渲染器异常退出 (退出码: ${code})`;
                     mainWindow.webContents.send('render-error', {
-                        message: exitMsg + '\nCheck resolution, samples, or available memory.' + errDetail,
+                        message: exitMsg + '\n请检查分辨率、采样数或可用内存。' + errDetail,
                     });
                 }
             }
@@ -343,7 +376,7 @@ ipcMain.on('cancel-render', () => {
         renderProcess.kill();
         renderProcess = null;
         if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('render-error', { message: 'Render cancelled by user' });
+            mainWindow.webContents.send('render-error', { message: '用户取消了渲染' });
         }
     }
 });
