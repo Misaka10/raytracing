@@ -400,9 +400,9 @@ async function loadCalibration() {
         }
     } catch (err) {
         calStatus.textContent = '校准不可用';
-        calibration = { pixel_samples_per_ms: 200 };
+        calibration = { pixel_samples_per_ms: 500 };
         if (gpuAvailable) {
-            gpuCalibration = { pixel_samples_per_ms: 10000 };
+            gpuCalibration = { pixel_samples_per_ms: 50000 };
         }
     }
     updateEstimates();
@@ -411,7 +411,7 @@ async function loadCalibration() {
 // Init
 checkGpu().then(() => loadCalibration()).catch(() => {
     calStatus.textContent = '校准不可用';
-    calibration = { pixel_samples_per_ms: 200 };
+    calibration = { pixel_samples_per_ms: 500 };
     updateEstimates();
 });
 updateEstimates();

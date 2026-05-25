@@ -221,6 +221,7 @@ fn main() {
                     .arg("-lineinfo")
                     .arg("--extra-device-vectorization")
                     .arg("--gpu-architecture=compute_75")
+                    .arg("-Xcompiler").arg("/MT")
                     .arg(format!("-ccbin={}", msvc_bin.display()))
                     .arg(format!("-I{}", optix_include.display()))
                     .arg(format!("-I{}", shader_dir.display()))
@@ -263,7 +264,8 @@ fn main() {
         .arg("--use_fast_math")
         .arg("-O3")
         .arg("-lineinfo")
-        .arg("--gpu-architecture=compute_75")
+        .arg("--gpu-architecture=compute_120")
+        .arg("-Xcompiler").arg("/MT")
         .arg(format!("-ccbin={}", msvc_bin.display()))
         .arg(format!("-I{}", optix_include.display()))
         .arg(format!("-I{}", cuda_include.display()))
@@ -303,8 +305,8 @@ fn main() {
     if cuda_lib_dir.exists() {
         println!("cargo:rustc-link-search=native={}", cuda_lib_dir.display());
     }
-    println!("cargo:rustc-link-lib=cudart");
-    println!("cargo:rustc-link-lib=cuda"); // CUDA driver API (cuInit, cuCtxCreate, etc.)
+    println!("cargo:rustc-link-lib=static=cudart_static");
+    println!("cargo:rustc-link-lib=cuda"); // CUDA driver API (cuInit, cuCtxCreate, etc.) — from nvcuda.dll in driver
 
     eprintln!("[build.rs] GPU build complete. Bridge lib + shader PTX ready.");
 }

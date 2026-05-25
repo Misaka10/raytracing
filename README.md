@@ -31,7 +31,7 @@ RT Renderer is a physically based path tracer implementing the techniques from *
 | Backend | Technology | Performance |
 |---------|-----------|-------------|
 | CPU | Rust + rayon parallel | ~200 px/sample/ms (16-core) |
-| GPU | CUDA + NVIDIA OptiX 9.1 + RT Core BVH | ~10,000 px/sample/ms (RTX 5080) |
+| GPU | CUDA + NVIDIA OptiX 9.1 + RT Core BVH | ~10,000 px/sample/ms (high-end NVIDIA GPU) |
 
 Both backends produce visually identical output given the same scene and seed (differ only by RNG noise).
 
@@ -397,9 +397,9 @@ Outputs JSON to stdout:
   "status": "ok",
   "cuda": {
     "available": true,
-    "device_name": "NVIDIA GeForce RTX 5080",
+    "device_name": "NVIDIA GeForce RTX 4090",
     "driver_version": "13.2",
-    "compute_capability": "12.0",
+    "compute_capability": "8.9",
     "vram_mb": 16302,
     "device_count": 1,
     "warnings": null,
@@ -407,7 +407,7 @@ Outputs JSON to stdout:
   },
   "optix": {
     "available": true,
-    "device_name": "NVIDIA GeForce RTX 5080",
+    "device_name": "NVIDIA GeForce RTX 4090",
     "error": null
   }
 }
@@ -571,7 +571,7 @@ RT Renderer 是一个基于物理的路径追踪器，实现了《Ray Tracing: T
 | 后端 | 技术 | 性能 |
 |------|------|------|
 | CPU | Rust + rayon 并行 | ~200 px/sample/ms（16核） |
-| GPU | CUDA + NVIDIA OptiX 9.1 + RT Core BVH | ~10,000 px/sample/ms（RTX 5080） |
+| GPU | CUDA + NVIDIA OptiX 9.1 + RT Core BVH | ~10,000 px/sample/ms（高端 NVIDIA GPU） |
 
 两种后端在相同场景和随机种子下产生视觉上完全一致的输出（仅因 RNG 噪声有细微差异）。
 
@@ -937,9 +937,9 @@ strip = true
   "status": "ok",
   "cuda": {
     "available": true,
-    "device_name": "NVIDIA GeForce RTX 5080",
+    "device_name": "NVIDIA GeForce RTX 4090",
     "driver_version": "13.2",
-    "compute_capability": "12.0",
+    "compute_capability": "8.9",
     "vram_mb": 16302,
     "device_count": 1,
     "warnings": null,
@@ -947,7 +947,7 @@ strip = true
   },
   "optix": {
     "available": true,
-    "device_name": "NVIDIA GeForce RTX 5080",
+    "device_name": "NVIDIA GeForce RTX 4090",
     "error": null
   }
 }

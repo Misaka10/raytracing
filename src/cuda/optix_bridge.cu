@@ -1,6 +1,5 @@
 #include "optix_bridge.h"
 
-#include <cuda_runtime.h>
 #include <cuda.h>
 #include <optix.h>
 #include <optix_function_table_definition.h>
