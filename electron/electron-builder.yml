@@ -1,6 +1,6 @@
 appId: com.rt.renderer
 productName: RT Renderer
-copyright: CC0
+copyright: MIT License
 directories:
   output: dist-pkg
 extraResources:
