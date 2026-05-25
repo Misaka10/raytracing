@@ -300,8 +300,6 @@ impl Camera {
             anyhow::bail!("Failed to build BVH: {}", bridge.get_error());
         }
 
-        let gpu_render_start = if calibrate { Some(std::time::Instant::now()) } else { None };
-
         // Upload materials
         if !bridge.set_materials(&gpu_scene.materials) {
             anyhow::bail!("Failed to upload materials: {}", bridge.get_error());
@@ -354,8 +352,20 @@ impl Camera {
         if !calibrate {
             eprintln!("Rendering GPU {}x{} with {} spp...", w, h, spp);
         }
+        let gpu_render_start = if calibrate { Some(std::time::Instant::now()) } else { None };
         if !bridge.render(&mut output, &cam, seed as u32) {
             anyhow::bail!("GPU render failed: {}", bridge.get_error());
+        }
+
+        // Compute elapsed time immediately after GPU render,
+        // before any post-processing (denoise, PNG save).
+        if let Some(start) = gpu_render_start {
+            let elapsed = start.elapsed();
+            let total_pixel_samples = (w * h * spp as usize) as f64;
+            let px_per_ms = total_pixel_samples / (elapsed.as_secs_f64() * 1000.0);
+            println!("{}", serde_json::to_string(&serde_json::json!({
+                "pixel_samples_per_ms": px_per_ms,
+            })).unwrap());
         }
 
         // Apply AI denoiser if requested
@@ -367,16 +377,8 @@ impl Camera {
         }
 
         // Convert float buffer to 16-bit PNG
-        save_png_gpu(output_path, w as u32, h as u32, &output)?;
-
-        if let Some(start) = gpu_render_start {
-            let elapsed = start.elapsed();
-            let total_pixel_samples = (w * h * spp as usize) as f64;
-            let px_per_ms = total_pixel_samples / (elapsed.as_secs_f64() * 1000.0);
-            println!("{}", serde_json::to_string(&serde_json::json!({
-                "pixel_samples_per_ms": px_per_ms,
-            })).unwrap());
-        } else {
+        if !calibrate {
+            save_png_gpu(output_path, w as u32, h as u32, &output)?;
             eprintln!("Wrote {}", output_path);
         }
         Ok(())
@@ -468,8 +470,7 @@ impl Camera {
             bar.finish_with_message("Done.");
         }
 
-        save_png(output_path, w as u32, h as u32, &pixel_data)?;
-
+        // Compute elapsed time before any file I/O
         if let Some(start) = render_start {
             let elapsed = start.elapsed();
             let total_pixel_samples = (total_pixels * self.samples_per_pixel as usize) as f64;
@@ -477,14 +478,20 @@ impl Camera {
             println!("{}", serde_json::to_string(&json!({
                 "pixel_samples_per_ms": px_per_ms,
             })).unwrap());
-        } else if json_progress {
-            let msg = json!({
-                "type": "done",
-                "output": output_path,
-            });
-            println!("{}", serde_json::to_string(&msg).unwrap());
-        } else {
-            println!("Wrote {}", output_path);
+        }
+
+        if !calibrate {
+            save_png(output_path, w as u32, h as u32, &pixel_data)?;
+
+            if json_progress {
+                let msg = json!({
+                    "type": "done",
+                    "output": output_path,
+                });
+                println!("{}", serde_json::to_string(&msg).unwrap());
+            } else {
+                println!("Wrote {}", output_path);
+            }
         }
         Ok(())
     }

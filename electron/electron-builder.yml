@@ -1,6 +1,7 @@
 appId: com.rt.renderer
 productName: RT Renderer
 copyright: CC0
+icon: assets/icon.ico
 directories:
   output: dist-pkg
 extraResources:

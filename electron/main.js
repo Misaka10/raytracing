@@ -28,6 +28,7 @@ function createWindow() {
         minWidth: 900,
         minHeight: 700,
         title: 'RT Renderer - Monte Carlo Path Tracer',
+        icon: path.join(__dirname, 'assets', 'icon.ico'),
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
@@ -53,7 +54,12 @@ ipcMain.handle('read-calibration', async () => {
     const calPath = getCalibrationPath();
     if (fs.existsSync(calPath)) {
         try {
-            return JSON.parse(fs.readFileSync(calPath, 'utf8'));
+            const data = JSON.parse(fs.readFileSync(calPath, 'utf8'));
+            if (data.app_version !== app.getVersion()) {
+                try { fs.unlinkSync(calPath); } catch (__) {}
+                return null;
+            }
+            return data;
         } catch (_) {
             // Corrupted file — delete and re-calibrate
             try { fs.unlinkSync(calPath); } catch (__) {}
@@ -68,7 +74,12 @@ ipcMain.handle('read-gpu-calibration', async () => {
     const calPath = getGpuCalibrationPath();
     if (fs.existsSync(calPath)) {
         try {
-            return JSON.parse(fs.readFileSync(calPath, 'utf8'));
+            const data = JSON.parse(fs.readFileSync(calPath, 'utf8'));
+            if (data.app_version !== app.getVersion()) {
+                try { fs.unlinkSync(calPath); } catch (__) {}
+                return null;
+            }
+            return data;
         } catch (_) {
             try { fs.unlinkSync(calPath); } catch (__) {}
             return null;
@@ -179,8 +190,8 @@ ipcMain.handle('run-calibration', async (_event, useGpu = false) => {
     const calOutput = path.join(app.getPath('temp'), 'rt_calibration.png');
 
     // 使用更大的校准负载以减少固定开销占比
-    const width = useGpu ? 640 : 320;
-    const height = useGpu ? 360 : 180;
+    const width = useGpu ? 1280 : 320;
+    const height = useGpu ? 720 : 180;
     const samples = useGpu ? 4 : 8;
 
     const args = [
@@ -251,6 +262,7 @@ ipcMain.handle('run-calibration', async (_event, useGpu = false) => {
                         pixel_samples_per_ms: Math.round(pixelSamplesPerMs * 100) / 100,
                         calibrated_at: new Date().toISOString(),
                         gpu: useGpu,
+                        app_version: app.getVersion(),
                     };
                     const calPath = useGpu ? getGpuCalibrationPath() : getCalibrationPath();
                     try {
