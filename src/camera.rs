@@ -261,6 +261,7 @@ impl Camera {
         }
     }
 
+    #[cfg(feature = "cuda")]
     pub fn render_gpu(&self, world: &Hittable, output_path: &str, seed: Option<u64>, denoise: bool) -> anyhow::Result<()> {
         use crate::cuda::optix::{self, BridgeCameraParams, OptiXBridge};
         use crate::cuda::scene::GpuScene;
