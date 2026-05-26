@@ -173,6 +173,31 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                 bool front_face;
                 normal = face_normal(ray_dir, normal, &front_face);
 
+                // Write first-hit denoiser guide buffers (single sample, first bounce)
+                if (depth == 0 && sj == 0 && si == 0) {
+                    if (launch_params.guide_normal_buffer) {
+                        launch_params.guide_normal_buffer[pixel_idx] = normal;
+                    }
+                    if (launch_params.albedo_buffer) {
+                        GpuFloat3 guide_albedo;
+                        switch (mat.mat_type) {
+                            case MAT_LAMBERTIAN:
+                            case MAT_METAL:
+                            case MAT_ISOTROPIC:
+                                guide_albedo = mat.albedo;
+                                break;
+                            case MAT_DIELECTRIC:
+                            case MAT_DIFFUSE_LIGHT:
+                                guide_albedo = {1.0f, 1.0f, 1.0f};
+                                break;
+                            default:
+                                guide_albedo = {0.5f, 0.5f, 0.5f};
+                                break;
+                        }
+                        launch_params.albedo_buffer[pixel_idx] = guide_albedo;
+                    }
+                }
+
                 // Emission (only from front face, matching CPU)
                 if (mat.mat_type == MAT_DIFFUSE_LIGHT) {
                     if (front_face) {

@@ -448,7 +448,7 @@ impl Camera {
         // Apply AI denoiser if requested
         if denoise {
             eprintln!("Applying AI denoiser (Tensor Core)...");
-            if !bridge.denoise() {
+            if !bridge.denoise(&mut output) {
                 eprintln!("Warning: denoise failed: {}", bridge.get_error());
             }
         }

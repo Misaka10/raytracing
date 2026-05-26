@@ -59,6 +59,8 @@ struct GpuLaunchParams {
     // Sphere for MIS
     GpuFloat3               sphere_center;
     float                   sphere_radius;
+    GpuFloat3*              albedo_buffer;
+    GpuFloat3*              guide_normal_buffer;
 };
 
 // Verify host-side struct sizes match GPU-side (common.h) expectations
@@ -155,6 +157,10 @@ struct OptiXBridge {
     CUdeviceptr                  d_denoiserScratch;
     size_t                       denoiserScratchSize;
     CUdeviceptr                  d_denoisedOutput;
+    CUdeviceptr                  d_albedoBuffer;
+    CUdeviceptr                  d_guideNormalBuffer;
+    int                          denoiserWidth;
+    int                          denoiserHeight;
     bool                         denoiserSetup;
 
     char                         deviceName[256];
@@ -255,6 +261,10 @@ OptiXBridge* optix_bridge_init(
     bridge->d_denoiserScratch = 0;
     bridge->denoiserScratchSize = 0;
     bridge->d_denoisedOutput = 0;
+    bridge->d_albedoBuffer = 0;
+    bridge->d_guideNormalBuffer = 0;
+    bridge->denoiserWidth = 0;
+    bridge->denoiserHeight = 0;
     bridge->denoiserSetup = false;
     bridge->d_output = 0;
     bridge->d_launchParams = 0;
@@ -447,6 +457,8 @@ void optix_bridge_destroy(OptiXBridge* bridge) {
     if (bridge->d_output)      cuMemFree(bridge->d_output);
     if (bridge->d_launchParams) cuMemFree(bridge->d_launchParams);
     if (bridge->d_denoisedOutput) cuMemFree(bridge->d_denoisedOutput);
+    if (bridge->d_albedoBuffer)      cuMemFree(bridge->d_albedoBuffer);
+    if (bridge->d_guideNormalBuffer) cuMemFree(bridge->d_guideNormalBuffer);
     if (bridge->d_denoiserScratch) cuMemFree(bridge->d_denoiserScratch);
     if (bridge->d_denoiserState) cuMemFree(bridge->d_denoiserState);
     if (bridge->denoiser)       optixDenoiserDestroy(bridge->denoiser);
@@ -612,6 +624,14 @@ bool optix_bridge_create_pipeline(
     if (bridge->d_launchParams) cuMemFree(bridge->d_launchParams);
     CUDA_CHECK(cuMemAlloc(&bridge->d_launchParams, sizeof(GpuLaunchParams)));
 
+    // Allocate denoiser guide buffers (albedo + world-space normal, per-pixel float3)
+    if (bridge->d_albedoBuffer) cuMemFree(bridge->d_albedoBuffer);
+    if (bridge->d_guideNormalBuffer) cuMemFree(bridge->d_guideNormalBuffer);
+    CUDA_CHECK(cuMemAlloc(&bridge->d_albedoBuffer, outputSize));
+    CUDA_CHECK(cuMemAlloc(&bridge->d_guideNormalBuffer, outputSize));
+    CUDA_CHECK(cuMemsetD8(bridge->d_albedoBuffer, 0, outputSize));
+    CUDA_CHECK(cuMemsetD8(bridge->d_guideNormalBuffer, 0, outputSize));
+
     fprintf(stderr, "[OptiXBridge] Pipeline created: %dx%d, output buffer %zu MB\n",
             width, height, outputSize / (1024 * 1024));
     return true;
@@ -648,6 +668,8 @@ bool optix_bridge_render(
     params.light_area_inv = bridge->lightAreaInv;
     params.sphere_center = bridge->sphereCenter;
     params.sphere_radius = bridge->sphereRadius;
+    params.albedo_buffer = (GpuFloat3*)bridge->d_albedoBuffer;
+    params.guide_normal_buffer = (GpuFloat3*)bridge->d_guideNormalBuffer;
     fillGpuCamera(camera, &params.camera);
 
     CUDA_CHECK(cuMemcpyHtoD(bridge->d_launchParams, &params, sizeof(GpuLaunchParams)));
@@ -755,17 +777,30 @@ bool optix_bridge_set_sphere(
     return true;
 }
 
-bool optix_bridge_denoise(OptiXBridge* bridge) {
+bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
     if (!bridge || !bridge->d_output || bridge->width == 0) return false;
 
     int width = bridge->width;
     int height = bridge->height;
 
-    // Create HDR denoiser (Tensor Core accelerated, no guide buffers needed)
+    // Resolution change: destroy old denoiser and recreate with correct size
+    if (bridge->denoiser && (bridge->denoiserWidth != width || bridge->denoiserHeight != height)) {
+        fprintf(stderr, "[OptiXBridge] Resolution changed %dx%d -> %dx%d, recreating denoiser\n",
+                bridge->denoiserWidth, bridge->denoiserHeight, width, height);
+        if (bridge->d_denoisedOutput)   { cuMemFree(bridge->d_denoisedOutput);   bridge->d_denoisedOutput = 0; }
+        if (bridge->d_denoiserScratch)  { cuMemFree(bridge->d_denoiserScratch);  bridge->d_denoiserScratch = 0; }
+        if (bridge->d_denoiserState)    { cuMemFree(bridge->d_denoiserState);    bridge->d_denoiserState = 0; }
+        if (bridge->denoiser)           { optixDenoiserDestroy(bridge->denoiser); bridge->denoiser = 0; }
+        bridge->denoiserSetup = false;
+        bridge->denoiserStateSize = 0;
+        bridge->denoiserScratchSize = 0;
+    }
+
+    // One-time creation (HDR model + albedo/normal guide buffers)
     if (!bridge->denoiser) {
         OptixDenoiserOptions opts = {};
-        opts.guideAlbedo = 0;
-        opts.guideNormal = 0;
+        opts.guideAlbedo = 1;
+        opts.guideNormal = 1;
 
         OPTIX_CHECK(optixDenoiserCreate(
             bridge->optixCtx,
@@ -799,12 +834,13 @@ bool optix_bridge_denoise(OptiXBridge* bridge) {
             bridge->denoiserScratchSize
         ));
 
-        // Allocate denoised output buffer (same size as d_output)
         size_t outputSize = width * height * 3 * sizeof(float);
         CUDA_CHECK(cuMemAlloc(&bridge->d_denoisedOutput, outputSize));
 
+        bridge->denoiserWidth = width;
+        bridge->denoiserHeight = height;
         bridge->denoiserSetup = true;
-        fprintf(stderr, "[OptiXBridge] Denoiser created (HDR model, Tensor Core accelerated)\n");
+        fprintf(stderr, "[OptiXBridge] Denoiser created (HDR model + albedo/normal guides, Tensor Core)\n");
     }
 
     unsigned int rowStride = (unsigned int)(width * 3 * sizeof(float));
@@ -818,7 +854,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge) {
     inputImage.pixelStrideInBytes = 3 * sizeof(float);
     inputImage.format = OPTIX_PIXEL_FORMAT_FLOAT3;
 
-    // Output goes to a separate buffer, then copied back to d_output
+    // Output image
     OptixImage2D outputImage = {};
     outputImage.data = bridge->d_denoisedOutput;
     outputImage.width = (unsigned int)width;
@@ -827,12 +863,34 @@ bool optix_bridge_denoise(OptiXBridge* bridge) {
     outputImage.pixelStrideInBytes = 3 * sizeof(float);
     outputImage.format = OPTIX_PIXEL_FORMAT_FLOAT3;
 
+    // Guide albedo (first-hit surface reflectance)
+    OptixImage2D albedoImage = {};
+    albedoImage.data = bridge->d_albedoBuffer;
+    albedoImage.width = (unsigned int)width;
+    albedoImage.height = (unsigned int)height;
+    albedoImage.rowStrideInBytes = rowStride;
+    albedoImage.pixelStrideInBytes = 3 * sizeof(float);
+    albedoImage.format = OPTIX_PIXEL_FORMAT_FLOAT3;
+
+    // Guide normal (first-hit world-space normal)
+    OptixImage2D normalImage = {};
+    normalImage.data = bridge->d_guideNormalBuffer;
+    normalImage.width = (unsigned int)width;
+    normalImage.height = (unsigned int)height;
+    normalImage.rowStrideInBytes = rowStride;
+    normalImage.pixelStrideInBytes = 3 * sizeof(float);
+    normalImage.format = OPTIX_PIXEL_FORMAT_FLOAT3;
+
+    OptixDenoiserGuideLayer guideLayer = {};
+    guideLayer.albedo = albedoImage;
+    guideLayer.normal = normalImage;
+
     OptixDenoiserLayer inputLayer = {};
     inputLayer.input = inputImage;
     inputLayer.output = outputImage;
 
     OptixDenoiserParams params = {};
-    params.hdrIntensity = 1.0f;
+    // hdrIntensity defaults to 0.0 (auto-compute) — critical for HDR scenes
 
     OPTIX_CHECK(optixDenoiserInvoke(
         bridge->denoiser,
@@ -840,17 +898,17 @@ bool optix_bridge_denoise(OptiXBridge* bridge) {
         &params,
         bridge->d_denoiserState,
         bridge->denoiserStateSize,
-        NULL,              // no guide layer for HDR mode
+        &guideLayer,
         &inputLayer,
-        1,                 // single input layer
-        0, 0,              // input offset
+        1,
+        0, 0,
         bridge->d_denoiserScratch,
         bridge->denoiserScratchSize
     ));
 
     CUDA_CHECK(cuStreamSynchronize(bridge->stream));
 
-    // Copy denoised result back to d_output so render() downloads it
+    // Copy denoised result back to d_output
     size_t outputSize = width * height * 3 * sizeof(float);
     CUDA_CHECK(cuMemcpyDtoD(
         bridge->d_output,
@@ -858,7 +916,10 @@ bool optix_bridge_denoise(OptiXBridge* bridge) {
         outputSize
     ));
 
-    fprintf(stderr, "[OptiXBridge] Denoised %dx%d image (Tensor Core HDR)\n", width, height);
+    // Download to host so caller gets the denoised data
+    CUDA_CHECK(cuMemcpyDtoH(output, bridge->d_output, outputSize));
+
+    fprintf(stderr, "[OptiXBridge] Denoised %dx%d image (Tensor Core HDR with guides)\n", width, height);
     return true;
 }
 

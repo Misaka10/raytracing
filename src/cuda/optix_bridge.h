@@ -126,9 +126,10 @@ bool optix_bridge_render(
 );
 
 /* Apply OptiX AI denoiser (Tensor Core accelerated, HDR model).
-   Denoises the last rendered frame in-place (modifies d_output).
+   Uses albedo + normal guide buffers for higher quality.
+   Denoises the last rendered frame and downloads result to output.
    Must be called after render. Returns true on success. */
-bool optix_bridge_denoise(OptiXBridge* bridge);
+bool optix_bridge_denoise(OptiXBridge* bridge, float* output);
 
 /* Get the CUDA device name detected during init. Returns "" if not initialized. */
 const char* optix_bridge_get_device_name(const OptiXBridge* bridge);

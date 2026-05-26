@@ -64,6 +64,8 @@ struct LaunchParams {
     // Sphere for MIS direction sampling (matching CPU lights list)
     GpuFloat3               sphere_center;
     float                   sphere_radius;
+    GpuFloat3*              albedo_buffer;
+    GpuFloat3*              guide_normal_buffer;
 };
 
 // GpuFloat3 helpers (same semantics as CUDA float3 but 4-byte aligned)
