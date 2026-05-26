@@ -1,6 +1,6 @@
 {
   "name": "rt-renderer",
-  "version": "1.1.9",
+  "version": "1.1.10",
   "description": "Monte Carlo Path Tracer - Electron Frontend",
   "license": "MIT",
   "main": "main.js",

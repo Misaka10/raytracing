@@ -10,27 +10,27 @@ set BUILD_GPU=0
 if "%1"=="--gpu" set BUILD_GPU=1
 if "%1"=="-g" set BUILD_GPU=1
 
-echo [1/3] Building Rust path tracer (release)...
-cargo build --release
-if %ERRORLEVEL% NEQ 0 (
-    echo ERROR: Rust build failed!
-    pause
-    exit /b 1
-)
-
 if %BUILD_GPU%==1 (
-    echo.
-    echo [2/3] Building Rust path tracer with CUDA (GPU release)...
+    echo [1/2] Building Rust path tracer with CUDA (GPU release^)...
     cargo build --release --features cuda
     if %ERRORLEVEL% NEQ 0 (
-        echo WARNING: GPU build failed. CPU binary will work, GPU mode disabled.
-        echo          Install CUDA Toolkit 12.x and OptiX SDK 9.x, then set OPTIX_PATH.
-        set BUILD_GPU=0
+        echo ERROR: GPU build failed!
+        echo        Install CUDA Toolkit 13.1 and OptiX SDK 9.1.0, then set OPTIX_PATH.
+        pause
+        exit /b 1
+    )
+) else (
+    echo [1/2] Building Rust path tracer (CPU release^)...
+    cargo build --release
+    if %ERRORLEVEL% NEQ 0 (
+        echo ERROR: Rust build failed!
+        pause
+        exit /b 1
     )
 )
 
 echo.
-echo [3/3] Packaging Electron app...
+echo [2/2] Packaging Electron app...
 cd electron
 if not exist "node_modules\" (
     echo       Installing npm dependencies...
