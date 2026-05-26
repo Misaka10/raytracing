@@ -1,6 +1,6 @@
 // RT 渲染器 — Electron 主进程
 // 负责：窗口管理、Rust 渲染进程生命周期、IPC 通信、GPU 检测与性能校准
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, protocol } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -43,7 +43,23 @@ function createWindow() {
     mainWindow.setMenuBarVisibility(false);
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+    protocol.handle('rendered-file', (request) => {
+        const filePath = request.url.slice('rendered-file:///'.length);
+        try {
+            const data = fs.readFileSync(filePath);
+            const ext = path.extname(filePath).toLowerCase();
+            const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
+            return new Response(data, {
+                status: 200,
+                headers: { 'content-type': mime },
+            });
+        } catch (_) {
+            return new Response('Not Found', { status: 404 });
+        }
+    });
+    createWindow();
+});
 
 app.on('window-all-closed', () => {
     if (renderProcess) {
@@ -324,6 +340,22 @@ ipcMain.handle('start-render', async (_event, config) => {
             stdio: ['ignore', 'pipe', 'pipe'],
         });
 
+        // CPU 渲染上限 10 分钟，GPU 上限 2 分钟（GPU 无响应通常意味着驱动/VRAM 问题）
+        const renderTimeoutMs = config.gpu ? 120_000 : 600_000;
+        const timeoutLabel = config.gpu ? '2 分钟' : '10 分钟';
+        const timeout = setTimeout(() => {
+            if (renderProcess) {
+                renderProcess.kill();
+                renderProcess = null;
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('render-error', {
+                        message: `渲染超时 (${timeoutLabel})。请降低分辨率或采样数后重试。`,
+                    });
+                }
+                resolve({ error: '渲染超时' });
+            }
+        }, renderTimeoutMs);
+
         let buffer = '';
         let lastProgress = null;
         let stderrLines = [];
@@ -362,11 +394,13 @@ ipcMain.handle('start-render', async (_event, config) => {
         });
 
         renderProcess.on('error', (err) => {
+            clearTimeout(timeout);
             renderProcess = null;
             resolve({ error: `渲染器启动失败: ${err.message}` });
         });
 
         renderProcess.on('close', (code) => {
+            clearTimeout(timeout);
             renderProcess = null;
             if (mainWindow && !mainWindow.isDestroyed()) {
                 if (code === 0) {
@@ -402,15 +436,3 @@ ipcMain.on('cancel-render', () => {
     }
 });
 
-// Get image as base64 data URL
-ipcMain.handle('get-image-data', async (_event, imagePath) => {
-    try {
-        const data = fs.readFileSync(imagePath);
-        const ext = path.extname(imagePath).toLowerCase();
-        const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
-        const base64 = data.toString('base64');
-        return { dataUrl: `data:${mime};base64,${base64}` };
-    } catch (err) {
-        return { error: `Failed to read rendered image: ${err.message}` };
-    }
-});

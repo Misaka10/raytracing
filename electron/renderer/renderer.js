@@ -67,7 +67,8 @@ function updateEstimates() {
     const spp = parseInt(samplesSlider.value) || 400;
 
     // Memory estimate
-    const mb = (w * h * 6 * 1.3) / (1024 * 1024);
+    const bytesPerPixel = isGpuMode() ? 48 : 6;
+    const mb = (w * h * bytesPerPixel * 1.3) / (1024 * 1024);
     memoryVal.textContent = mb >= 1024 ? `~${(mb / 1024).toFixed(2)} GB` : `~${Math.round(mb)} MB`;
 
     if (mb > 500) {
@@ -245,16 +246,7 @@ btnStart.addEventListener('click', async () => {
         setRenderingState(false);
 
         if (msg.output) {
-            try {
-                const result = await window.electronAPI.getImageData(msg.output);
-                if (result && result.dataUrl) {
-                    displayImage(result.dataUrl);
-                } else if (result && result.error) {
-                    showError(result.error);
-                }
-            } catch (_) {
-                showError('加载渲染图像失败');
-            }
+            displayImage(`rendered-file:///${msg.output}`);
         }
         progressSection.style.display = 'none';
     });

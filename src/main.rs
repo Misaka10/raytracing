@@ -22,20 +22,20 @@ use rt_next_week::{quad_box, Hittable, HittableList};
 #[command(name = "rt-next-week")]
 #[command(about = "Physically based Monte Carlo path tracer (Rust port)")]
 struct Args {
-    #[arg(long, default_value = "3840")]
+    #[arg(long, default_value = "3840", value_parser = clap::value_parser!(u32).range(1..=16384))]
     width: u32,
 
     /// 图像高度（0 = 从宽高比自动推导）
-    #[arg(long, default_value = "2160")]
+    #[arg(long, default_value = "2160", value_parser = clap::value_parser!(u32).range(0..=16384))]
     height: u32,
 
-    #[arg(long, default_value = "1.777")]
+    #[arg(long, default_value = "1.777", value_parser = |s: &str| -> Result<f64, String> { let v: f64 = s.parse().map_err(|e| format!("{e}"))?; if v < 0.1 || v > 10.0 { Err("值必须在 0.1 到 10.0 之间".into()) } else { Ok(v) } })]
     aspect_ratio: f64,
 
-    #[arg(long, default_value = "400")]
+    #[arg(long, default_value = "400", value_parser = clap::value_parser!(u32).range(1..=100000))]
     samples: u32,
 
-    #[arg(long, default_value = "75")]
+    #[arg(long, default_value = "75", value_parser = clap::value_parser!(u32).range(1..=200))]
     max_depth: u32,
 
     #[arg(long, default_value = "output.png")]

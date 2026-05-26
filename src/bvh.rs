@@ -21,6 +21,13 @@ impl BvhNode {
 
         let span = objects.len();
 
+        if span == 0 {
+            return BvhNode::Leaf {
+                object: Box::new(super::Hittable::HittableList(super::HittableList::new())),
+                bbox: Aabb::default(),
+            };
+        }
+
         if span == 1 {
             return BvhNode::Leaf { object: Box::new(objects[0].clone()), bbox };
         }
@@ -203,5 +210,30 @@ mod tests {
         let bvh = BvhNode::from_objects(&mut objs);
         let pdf = bvh.pdf_value(&Point3::new(0.0, 0.0, -5.0), &Vec3::new(0.0, 0.0, 1.0));
         assert!(pdf > 0.0, "pdf should be positive for a ray that hits all spheres");
+    }
+
+    #[test]
+    fn test_bvh_empty_no_panic() {
+        let mut objs: Vec<crate::Hittable> = vec![];
+        let bvh = BvhNode::from_objects(&mut objs);
+        match &bvh {
+            BvhNode::Leaf { .. } => {}
+            _ => panic!("Empty BVH should be a Leaf"),
+        }
+        let r = Ray::new(
+            Point3::new(0.0, 0.0, -5.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            0.0,
+        );
+        let mut rec = HitRecord {
+            p: Point3::zero(),
+            normal: Vec3::zero(),
+            mat: Material::lambertian_color(Vec3::zero()),
+            t: 0.0,
+            u: 0.0,
+            v: 0.0,
+            front_face: false,
+        };
+        assert!(!bvh.hit(&r, &Interval::new(0.001, f64::INFINITY), &mut rec));
     }
 }

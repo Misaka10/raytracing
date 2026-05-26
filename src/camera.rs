@@ -86,14 +86,26 @@ impl Camera {
     }
 
     pub fn initialize(&mut self) {
+        // 防御：width 不能为 0
+        if self.image_width == 0 {
+            self.image_width = 1;
+        }
         if self.image_height == 0 {
             self.image_height = (self.image_width as f64 / self.aspect_ratio) as u32;
+        }
+        // 防御：极端宽高比导致 height 过大，限制最大值防止 OOM
+        if self.image_height > 16384 {
+            self.image_height = 16384;
         }
         if self.image_height < 1 {
             self.image_height = 1;
         }
 
         self.sqrt_spp = (self.samples_per_pixel as f64).sqrt() as u32;
+        // 防御：samples=0 导致 sqrt_spp=0，后续 pixel_samples_scale=inf
+        if self.sqrt_spp == 0 {
+            self.sqrt_spp = 1;
+        }
         self.pixel_samples_scale = 1.0 / (self.sqrt_spp * self.sqrt_spp) as f64;
         self.recip_sqrt_spp = 1.0 / self.sqrt_spp as f64;
 
@@ -339,6 +351,10 @@ impl Camera {
         // Find area light geometry for importance sampling (before world flattening)
         let light_info = self.find_light_quad(world);
         let sphere_info = self.find_glass_sphere(world);
+
+        if light_info.is_none() {
+            anyhow::bail!("GPU 渲染需要场景中存在 DiffuseLight 四边形用于重要性采样");
+        }
 
         // Build GPU scene from world
         let gpu_scene = GpuScene::from_world(world);
@@ -877,5 +893,28 @@ mod tests {
         assert!(gpu_r > 60000.0, "GPU pixel {} should be bright white", gpu_r);
 
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_initialize_clamps_zero_samples() {
+        let mut cam = Camera::new();
+        cam.image_width = 100;
+        cam.image_height = 100;
+        cam.samples_per_pixel = 0;
+        cam.initialize();
+        assert!(cam.sqrt_spp >= 1);
+        assert!(cam.pixel_samples_scale.is_finite());
+        assert!(cam.recip_sqrt_spp.is_finite());
+    }
+
+    #[test]
+    fn test_initialize_clamps_extreme_aspect_ratio() {
+        let mut cam = Camera::new();
+        cam.image_width = 16384;
+        cam.image_height = 0;
+        cam.aspect_ratio = 0.001;
+        cam.initialize();
+        assert!(cam.image_height <= 16384);
+        assert!(cam.image_height >= 1);
     }
 }

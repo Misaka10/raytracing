@@ -614,7 +614,7 @@ bool optix_bridge_create_pipeline(
     bridge->width = width;
     bridge->height = height;
 
-    const size_t outputSize = width * height * 3 * sizeof(float);
+    const size_t outputSize = (size_t)width * (size_t)height * 3 * sizeof(float);
 
     // Allocate output buffer
     if (bridge->d_output) cuMemFree(bridge->d_output);
@@ -628,7 +628,18 @@ bool optix_bridge_create_pipeline(
     if (bridge->d_albedoBuffer) cuMemFree(bridge->d_albedoBuffer);
     if (bridge->d_guideNormalBuffer) cuMemFree(bridge->d_guideNormalBuffer);
     CUDA_CHECK(cuMemAlloc(&bridge->d_albedoBuffer, outputSize));
-    CUDA_CHECK(cuMemAlloc(&bridge->d_guideNormalBuffer, outputSize));
+    // Rollback: free albedo buffer if normal buffer alloc fails
+    {
+        CUresult r = cuMemAlloc(&bridge->d_guideNormalBuffer, outputSize);
+        if (r != CUDA_SUCCESS) {
+            cuMemFree(bridge->d_albedoBuffer);
+            bridge->d_albedoBuffer = 0;
+            const char* nm;
+            cuGetErrorName(r, &nm);
+            setError(bridge, "CUDA error %s at %s:%d (guideNormalBuffer)", nm, __FILE__, __LINE__);
+            return false;
+        }
+    }
     CUDA_CHECK(cuMemsetD8(bridge->d_albedoBuffer, 0, outputSize));
     CUDA_CHECK(cuMemsetD8(bridge->d_guideNormalBuffer, 0, outputSize));
 
@@ -699,7 +710,7 @@ bool optix_bridge_render(
     CUDA_CHECK(cuStreamSynchronize(bridge->stream));
 
     // Download result
-    const size_t outputSize = bridge->width * bridge->height * 3 * sizeof(float);
+    const size_t outputSize = (size_t)bridge->width * (size_t)bridge->height * 3 * sizeof(float);
     CUDA_CHECK(cuMemcpyDtoH(output, bridge->d_output, outputSize));
 
     return true;
@@ -834,7 +845,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
             bridge->denoiserScratchSize
         ));
 
-        size_t outputSize = width * height * 3 * sizeof(float);
+        size_t outputSize = (size_t)width * (size_t)height * 3 * sizeof(float);
         CUDA_CHECK(cuMemAlloc(&bridge->d_denoisedOutput, outputSize));
 
         bridge->denoiserWidth = width;
@@ -843,7 +854,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
         fprintf(stderr, "[OptiXBridge] Denoiser created (HDR model + albedo/normal guides, Tensor Core)\n");
     }
 
-    unsigned int rowStride = (unsigned int)(width * 3 * sizeof(float));
+    unsigned int rowStride = (unsigned int)((size_t)width * 3 * sizeof(float));
 
     // Input color layer
     OptixImage2D inputImage = {};
@@ -909,7 +920,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
     CUDA_CHECK(cuStreamSynchronize(bridge->stream));
 
     // Copy denoised result back to d_output
-    size_t outputSize = width * height * 3 * sizeof(float);
+    size_t outputSize = (size_t)width * (size_t)height * 3 * sizeof(float);
     CUDA_CHECK(cuMemcpyDtoD(
         bridge->d_output,
         bridge->d_denoisedOutput,

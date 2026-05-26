@@ -15,7 +15,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onLog: (callback) => {
         ipcRenderer.on('render-log', (_event, msg) => callback(msg));
     },
-    getImageData: (path) => ipcRenderer.invoke('get-image-data', path),
     runCalibration: (useGpu) => ipcRenderer.invoke('run-calibration', useGpu),
     checkGpu: () => ipcRenderer.invoke('check-gpu'),
     readCalibration: () => ipcRenderer.invoke('read-calibration'),
