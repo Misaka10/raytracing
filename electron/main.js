@@ -45,7 +45,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
     protocol.handle('rendered-file', (request) => {
-        const filePath = request.url.slice('rendered-file:///'.length);
+        const filePath = request.url.slice('rendered-file:///'.length).split('?')[0];
         try {
             const data = fs.readFileSync(filePath);
             const ext = path.extname(filePath).toLowerCase();

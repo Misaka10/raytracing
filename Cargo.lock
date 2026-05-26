@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "rt-next-week"
-version = "1.1.7"
+version = "1.1.8"
 dependencies = [
  "anyhow",
  "clap",
