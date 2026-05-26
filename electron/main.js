@@ -52,7 +52,10 @@ app.whenReady().then(() => {
             const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
             return new Response(data, {
                 status: 200,
-                headers: { 'content-type': mime },
+                headers: {
+                    'content-type': mime,
+                    'cache-control': 'no-store, no-cache, must-revalidate',
+                },
             });
         } catch (_) {
             return new Response('Not Found', { status: 404 });

@@ -259,7 +259,7 @@ btnStart.addEventListener('click', async () => {
         setRenderingState(false);
 
         if (msg.output) {
-            displayImage(`rendered-file:///${msg.output}`);
+            displayImage(`rendered-file:///${msg.output}?t=${Date.now()}`);
         }
         progressSection.style.display = 'none';
     });
