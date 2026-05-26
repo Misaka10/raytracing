@@ -26,6 +26,7 @@ const progressEta = $('#progress-eta');
 const gpuStatus = $('#gpu-status');
 const denoiseRow = $('#denoise-row');
 const denoiseCheck = $('#denoise');
+const btnPresetBack = $('#btn-preset-back');
 const gpuLabel = $('#gpu-label');
 const cpuRadio = document.querySelector('input[name="renderer"][value="cpu"]');
 const gpuRadio = document.querySelector('input[name="renderer"][value="gpu"]');
@@ -125,15 +126,27 @@ widthSelect.addEventListener('change', () => {
     if (val === 'custom') {
         widthSelect.style.display = 'none';
         widthInput.style.display = 'block';
+        btnPresetBack.style.display = 'inline-block';
         widthInput.value = '1920';
         widthInput.focus();
         updateHeight();
     } else {
         widthSelect.style.display = 'inline-block';
         widthInput.style.display = 'none';
+        btnPresetBack.style.display = 'none';
         widthInput.value = val;
         updateHeight();
     }
+    updateEstimates();
+});
+
+// Event: back to preset from custom width
+btnPresetBack.addEventListener('click', () => {
+    widthSelect.value = '1920';
+    widthSelect.style.display = 'inline-block';
+    widthInput.style.display = 'none';
+    btnPresetBack.style.display = 'none';
+    updateHeight();
     updateEstimates();
 });
 

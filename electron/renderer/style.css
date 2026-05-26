@@ -101,7 +101,23 @@ select, input[type="number"], input[type="text"] {
 select:focus, input:focus { outline: none; border-color: var(--accent); }
 input:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.input-row { display: flex; gap: 6px; }
+.input-row { display: flex; gap: 6px; align-items: center; }
+
+.btn-preset-back {
+    padding: 4px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    background: var(--bg-input);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s;
+}
+.btn-preset-back:hover {
+    background: #1a4a88;
+    color: var(--text);
+}
 
 .slider-row { margin: 2px 0; }
 
