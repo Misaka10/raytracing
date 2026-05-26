@@ -445,11 +445,13 @@ electron/
 | `run-calibration` | renderer -> main | Run 160x90 benchmark render |
 | `start-render` | renderer -> main | Start full-resolution render |
 | `cancel-render` | renderer -> main | Kill running render process |
-| `get-image-data` | renderer -> main | Read output PNG as base64 data URL |
 | `render-progress` | main -> renderer | Progress update (completed/total pixels) |
 | `render-done` | main -> renderer | Render complete with output path |
 | `render-error` | main -> renderer | Render error with message |
 | `render-log` | main -> renderer | Raw stderr output lines |
+
+Output images are served via custom `rendered-file://` protocol (bypasses Node.js 512MB string limit on base64 data URLs).
+Protocol handler strips `?t=...` cache buster from URL path, serves with `Cache-Control: no-store` to prevent stale image display after re-render.
 
 **GPU status display** (in renderer.js):
 - Checks GPU availability on startup via `--check-gpu`
@@ -461,7 +463,7 @@ electron/
 
 ## Testing
 
-88 unit tests across all modules. Run with:
+91 unit tests across all modules. Run with:
 
 ```sh
 cargo test --features cuda
@@ -985,11 +987,13 @@ electron/
 | `run-calibration` | 渲染器 -> 主进程 | 运行 160x90 基准渲染 |
 | `start-render` | 渲染器 -> 主进程 | 开始完整分辨率渲染 |
 | `cancel-render` | 渲染器 -> 主进程 | 终止正在运行的渲染进程 |
-| `get-image-data` | 渲染器 -> 主进程 | 将输出 PNG 读取为 base64 数据 URL |
 | `render-progress` | 主进程 -> 渲染器 | 进度更新（已完成/总像素数） |
 | `render-done` | 主进程 -> 渲染器 | 渲染完成，附带输出路径 |
 | `render-error` | 主进程 -> 渲染器 | 渲染错误，附带错误信息 |
 | `render-log` | 主进程 -> 渲染器 | 原始 stderr 输出行 |
+
+输出图片通过自定义 `rendered-file://` 协议加载（绕过 Node.js 512MB base64 数据 URL 限制）。
+协议处理器从 URL 路径中剥离 `?t=...` 缓存破坏参数，使用 `Cache-Control: no-store` 防止重渲染后显示旧图。
 
 **GPU 状态显示**（renderer.js 中）：
 - 启动时通过 `--check-gpu` 检测 GPU 可用性
@@ -1001,7 +1005,7 @@ electron/
 
 ## 测试
 
-共 88 个单元测试，覆盖所有模块。运行方式：
+共 91 个单元测试，覆盖所有模块。运行方式：
 
 ```sh
 cargo test --features cuda
