@@ -8,7 +8,7 @@ extern "C" {
 __constant__ LaunchParams launch_params;
 }
 
-// Reconstruct face normal from geometry normal + ray direction
+// 从几何法线和光线方向重建面法线
 __device__ inline GpuFloat3 face_normal(GpuFloat3 ray_dir, GpuFloat3 geo_normal, bool* front_face) {
     if (vec_dot(ray_dir, geo_normal) < 0.0f) {
         *front_face = true;
@@ -19,7 +19,7 @@ __device__ inline GpuFloat3 face_normal(GpuFloat3 ray_dir, GpuFloat3 geo_normal,
     }
 }
 
-// Sample a random point uniformly on the area light rectangle
+// 在面光源矩形上均匀采样一个点
 __device__ inline GpuFloat3 sample_light_point(RngState* rng) {
     float u = rng_uniform(rng);
     float v = rng_uniform(rng);
@@ -29,16 +29,16 @@ __device__ inline GpuFloat3 sample_light_point(RngState* rng) {
     );
 }
 
-// Light surface normal (computed from light_u × light_v, normalized)
+// 光源表面法线（由 light_u × light_v 计算，已归一化）
 __device__ inline GpuFloat3 light_normal() {
     GpuFloat3 n = vec_cross(launch_params.light_u, launch_params.light_v);
     return vec_normalize(n);
 }
 
-// Check if a ray (origin + t*dir) hits the light rectangle.
-// Returns the PDF value (distance^2 / (cos_light * area)), or 0 if missed.
+// 检测光线 (origin + t*dir) 是否命中光源矩形。
+// 命中返回 PDF 值 (distance^2 / (cos_light * area))，未命中返回 0。
 __device__ inline float light_pdf_value(GpuFloat3 origin, GpuFloat3 dir, GpuFloat3 l_normal) {
-    // Intersect ray with light plane: n·(p - corner) = 0
+    // 光线与光源平面相交：n·(p - corner) = 0
     // t = n·(corner - origin) / n·dir
     GpuFloat3 to_corner = vec_sub(launch_params.light_corner, origin);
     float denom = vec_dot(l_normal, dir);
@@ -46,10 +46,10 @@ __device__ inline float light_pdf_value(GpuFloat3 origin, GpuFloat3 dir, GpuFloa
     float t = vec_dot(l_normal, to_corner) / denom;
     if (t <= 1e-4f) return 0.0f;
 
-    // Intersection point
+    // 交点
     GpuFloat3 ip = vec_add(origin, scl_mul(t, dir));
 
-    // Check if within light rectangle (project onto u, v axes)
+    // 检查是否在光源矩形内（投影到 u、v 轴上）
     GpuFloat3 local = vec_sub(ip, launch_params.light_corner);
     float u_len_sq = vec_dot(launch_params.light_u, launch_params.light_u);
     float v_len_sq = vec_dot(launch_params.light_v, launch_params.light_v);
@@ -63,7 +63,7 @@ __device__ inline float light_pdf_value(GpuFloat3 origin, GpuFloat3 dir, GpuFloa
     return dist_sq / (cos_light * (1.0f / launch_params.light_area_inv));
 }
 
-// Check if a ray from origin in direction hits the sphere
+// 检测从原点沿给定方向的光线是否命中球体
 __device__ inline bool dir_hits_sphere(GpuFloat3 origin, GpuFloat3 dir) {
     GpuFloat3 oc = vec_sub(origin, launch_params.sphere_center);
     float a = vec_dot(dir, dir);
@@ -81,10 +81,10 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
     const unsigned int sqrt_spp = launch_params.sqrt_spp;
     const CameraParams& cam = launch_params.camera;
 
-    // Precompute light normal once per launch
+    // 每次启动预计算一次光源法线
     GpuFloat3 l_normal = light_normal();
 
-    // Per-pixel RNG seeded from global seed + pixel index (deterministic)
+    // 每像素 RNG，由全局种子 + 像素索引生成（确定性）
     RngState rng = rng_init(launch_params.seed
         ^ (pixel_idx * 0x9e3779b97f4a7c15ULL)
         ^ ((unsigned long long)idx.y << 32 | idx.x));
@@ -93,7 +93,7 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
 
     for (unsigned int sj = 0; sj < sqrt_spp; sj++) {
         for (unsigned int si = 0; si < sqrt_spp; si++) {
-            // Stratified sample (matches CPU Camera::get_ray)
+            // 分层采样（与 CPU Camera::get_ray 一致）
             float px = ((float)si + rng_uniform(&rng)) / (float)sqrt_spp - 0.5f;
             float py = ((float)sj + rng_uniform(&rng)) / (float)sqrt_spp - 0.5f;
 
@@ -106,7 +106,7 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
             );
 
             GpuFloat3 ray_origin = cam.lookfrom;
-            // Defocus blur
+            // 散焦模糊
             if (cam.defocus_angle > 0.0f) {
                 float r1 = rng_uniform(&rng);
                 float r2 = rng_uniform(&rng);
@@ -125,11 +125,11 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
             GpuFloat3 color = {0, 0, 0};
 
             for (unsigned int depth = 0; depth < launch_params.max_depth; depth++) {
-                // OptiX 9.x: all payload registers must be unsigned int
-                unsigned int p0 = 1; // miss flag
-                unsigned int p1 = 0, p2 = 0, p3 = 0; // hit position
-                unsigned int p4 = 0, p5 = 0, p6 = 0; // normal
-                unsigned int p7 = 0; // material ID
+                // OptiX 9.x：所有 payload 寄存器必须是 unsigned int
+                unsigned int p0 = 1; // miss 标志
+                unsigned int p1 = 0, p2 = 0, p3 = 0; // 命中位置
+                unsigned int p4 = 0, p5 = 0, p6 = 0; // 法线
+                unsigned int p7 = 0; // 材质 ID
 
                 optixTrace(
                     launch_params.traversable,
@@ -143,12 +143,12 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                 );
 
                 if (p0 == 1) {
-                    // Miss — add background contribution
+                    // 未命中 — 添加背景贡献
                     color = vec_add(color, vec_mul(throughput, launch_params.background));
                     break;
                 }
 
-                // Read hit data from payload
+                // 从 payload 读取命中数据
                 GpuFloat3 hit_point = {
                     __uint_as_float(p1),
                     __uint_as_float(p2),
@@ -161,19 +161,19 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                 };
                 unsigned int mat_id = p7;
 
-                // Validate material ID
+                // 验证材质 ID
                 if (mat_id >= launch_params.material_count) {
-                    color = vec_add(color, vec_mul(throughput, {1.0f, 0.0f, 1.0f})); // magenta error
+                    color = vec_add(color, vec_mul(throughput, {1.0f, 0.0f, 1.0f})); // 洋红色错误标记
                     break;
                 }
 
                 GpuMaterialData mat = launch_params.materials[mat_id];
 
-                // Determine front face and correct normal (before emission check)
+                // 在发光检测前确定正面与法线方向
                 bool front_face;
                 normal = face_normal(ray_dir, normal, &front_face);
 
-                // Write first-hit denoiser guide buffers (single sample, first bounce)
+                // 写入首次命中降噪引导缓冲区（单个样本，首次反弹）
                 if (depth == 0 && sj == 0 && si == 0) {
                     if (launch_params.guide_normal_buffer) {
                         launch_params.guide_normal_buffer[pixel_idx] = normal;
@@ -198,7 +198,7 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                     }
                 }
 
-                // Emission (only from front face, matching CPU)
+                // 发光（仅正面，与 CPU 一致）
                 if (mat.mat_type == MAT_DIFFUSE_LIGHT) {
                     if (front_face) {
                         color = vec_add(color, vec_mul(throughput, mat.emission));
@@ -206,7 +206,7 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                     break;
                 }
 
-                // Scatter
+                // 散射
                 ScatterResult sr;
                 sr.absorbed = false;
                 sr.skip_pdf = false;
@@ -234,7 +234,7 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                 }
 
                 if (sr.skip_pdf) {
-                    // Metal/dielectric: direct recursion
+                    // Metal/Dielectric：直接递归，无需 MIS
                     throughput = vec_mul(throughput, sr.attenuation);
                     if (vec_is_zero(throughput)) break;
 
@@ -243,14 +243,14 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                     continue;
                 }
 
-                // Sphere PDF helper: returns 1/solid_angle if direction hits sphere, else 0
-                // Matching CPU sphere.pdf_value() at sphere.rs:58-67
+                // 球体 PDF 辅助：方向命中球体时返回 1/solid_angle，否则返回 0
+                // 与 CPU sphere.pdf_value()（sphere.rs:58-67）一致
                 float sphere_pdf_val = 0.0f;
                 {
                     GpuFloat3 sc = launch_params.sphere_center;
                     float sr = launch_params.sphere_radius;
                     GpuFloat3 oc = vec_sub(hit_point, sc);
-                    // If origin is inside the sphere, skip (shouldn't happen for solid-angle sampling)
+                    // 原点在球体内部时跳过（立体角采样不应出现此情况）
                     float dist_sq = vec_dot(oc, oc);
                     if (dist_sq > sr * sr + 1e-4f) {
                         float cos_theta_max = sqrtf(1.0f - fminf(1.0f, sr * sr / dist_sq));
@@ -261,27 +261,27 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                     }
                 }
 
-                // === MIS with light sampling (50/50 mixture) ===
+                // === 含光源采样的 MIS（50/50 混合）===
 
                 GpuFloat3 scattered_dir;
                 float pdf_val;
                 float scattering_pdf;
 
                 if (rng_uniform(&rng) < 0.5f) {
-                    // Strategy 1: BRDF (cosine-weighted hemisphere) sampling
+                    // 策略 1：BSDF（余弦加权半球）采样
                     scattered_dir = sr.scattered_dir;
                     scattering_pdf = sr.pdf_value;  // cos(theta) / pi
 
-                    // Mixture PDF: 0.5 * BSDF + 0.5 * hittable_pdf
+                    // 混合 PDF: 0.5 * BSDF + 0.5 * hittable_pdf
                     // hittable_pdf = 0.5 * light_pdf + 0.5 * sphere_pdf
                     float light_pdf = light_pdf_value(hit_point, scattered_dir, l_normal);
                     float dir_sphere_pdf = dir_hits_sphere(hit_point, scattered_dir) ? sphere_pdf_val : 0.0f;
                     float hittable_pdf = 0.5f * light_pdf + 0.5f * dir_sphere_pdf;
                     pdf_val = 0.5f * scattering_pdf + 0.5f * hittable_pdf;
                 } else {
-                    // Strategy 2: hittable sampling — 50% light rect / 50% sphere
+                    // 策略 2：碰撞体采样 — 50% 光源矩形 / 50% 球体立体角
                     if (rng_uniform(&rng) < 0.5f) {
-                        // Light rectangle sampling
+                        // 光源矩形采样
                         GpuFloat3 light_pt = sample_light_point(&rng);
                         scattered_dir = vec_normalize(vec_sub(light_pt, hit_point));
                         scattering_pdf = cosine_pdf_value(normal, scattered_dir);
@@ -291,7 +291,7 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
                         float hittable_pdf = 0.5f * light_pdf + 0.5f * rect_sphere_pdf;
                         pdf_val = 0.5f * scattering_pdf + 0.5f * hittable_pdf;
                     } else {
-                        // Sphere solid-angle sampling (matching CPU sphere.random() / random_to_sphere)
+                        // 球体立体角采样（与 CPU sphere.random() / random_to_sphere 一致）
                         GpuFloat3 to_sphere = vec_sub(launch_params.sphere_center, hit_point);
                         float dist_sq = vec_dot(to_sphere, to_sphere);
                         GpuFloat3 dir_to_sphere = scl_div(to_sphere, sqrtf(dist_sq));
@@ -314,7 +314,7 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
 
                 if (pdf_val < 1e-10f) break;
 
-                // MIS weighting: throughput *= attenuation * scattering_pdf / pdf_val
+                // MIS 加权：throughput *= attenuation * scattering_pdf / pdf_val
                 throughput = vec_mul(throughput,
                     scl_mul(scattering_pdf / pdf_val, sr.attenuation));
 
@@ -330,7 +330,7 @@ extern "C" __global__ __launch_bounds__(256, 2) void __raygen__rg() {
 
     accumulated = scl_mul(launch_params.pixel_samples_scale, accumulated);
 
-    // Clamp and write to framebuffer
+    // 钳制并写入帧缓冲
     accumulated.x = fminf(fmaxf(accumulated.x, 0.0f), 100.0f);
     accumulated.y = fminf(fmaxf(accumulated.y, 0.0f), 100.0f);
     accumulated.z = fminf(fmaxf(accumulated.z, 0.0f), 100.0f);

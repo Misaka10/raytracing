@@ -1,544 +1,4 @@
-# RT Renderer — Physically Based Monte Carlo Path Tracer
-
-Rust port of Peter Shirley's *Ray Tracing: The Next Week* with NVIDIA OptiX GPU acceleration and Electron desktop frontend.
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Quick Start](#quick-start)
-- [CLI Usage](#cli-usage)
-- [Architecture](#architecture)
-  - [Module Map](#module-map)
-  - [CPU Rendering Pipeline](#cpu-rendering-pipeline)
-  - [GPU Rendering Pipeline](#gpu-rendering-pipeline)
-  - [Scene Construction](#scene-construction)
-  - [Multiple Importance Sampling (MIS)](#multiple-importance-sampling-mis)
-  - [Material System](#material-system)
-  - [PDF System](#pdf-system)
-- [Build System](#build-system)
-- [GPU Diagnostics](#gpu-diagnostics)
-- [Electron Frontend](#electron-frontend)
-- [Testing](#testing)
-- [Packaging](#packaging)
-- [Requirements](#requirements)
-
----
-
-## Overview
-
-RT Renderer is a physically based path tracer implementing the techniques from *Ray Tracing: The Next Week*. It supports two rendering backends:
-
-| Backend | Technology | Performance |
-|---------|-----------|-------------|
-| CPU | Rust + rayon parallel | ~200 px/sample/ms (16-core) |
-| GPU | CUDA + NVIDIA OptiX 9.1 + RT Core BVH | ~10,000 px/sample/ms (high-end NVIDIA GPU) |
-
-Both backends produce visually identical output given the same scene and seed (differ only by RNG noise).
-
-Key features:
-- Cornell box scene with box, glass sphere, area light
-- Multiple Importance Sampling (50/50 BSDF + light mixture)
-- RT Core hardware-accelerated BVH traversal
-- OptiX AI denoiser (Tensor Core, optional)
-- Barycentric-interpolated vertex normals for smooth spheres
-- Solid-angle sphere sampling for MIS
-- Deterministic rendering with `--seed`
-- Electron desktop UI with progress visualization
-
----
-
-## Quick Start
-
-```sh
-# One-click: CPU build + Electron package
-.\build.bat
-
-# One-click: CPU + GPU build + Electron package
-.\build.bat --gpu
-
-# CPU render (default: 4K, 400 spp, 75 bounces)
-cargo build --release
-./target/release/rt-next-week.exe --output scene.png
-
-# GPU render (requires CUDA 13.1 + OptiX 9.1 SDK)
-cargo build --release --features cuda
-./target/release/rt-next-week.exe --gpu --output scene.png
-
-# GPU diagnostics
-./target/release/rt-next-week.exe --check-gpu
-
-# Run tests
-cargo test --features cuda
-```
-
----
-
-## CLI Usage
-
-```
-rt-next-week.exe [OPTIONS]
-
-Options:
-  --width <N>         Image width (default: 3840)
-  --height <N>        Image height (default: 2160, or derived from aspect)
-  --aspect-ratio <R>  Aspect ratio (default: 1.777 = 16:9)
-  --samples <N>       Samples per pixel, stratified sqrt(N)xsqrt(N) (default: 400)
-  --max-depth <N>     Maximum ray bounces (default: 75)
-  --output <PATH>     Output PNG path (default: output.png)
-  --seed <N>          Random seed for deterministic rendering
-  --gpu               Use GPU (OptiX RT Core) backend
-  --denoise           Enable OptiX AI denoiser (GPU only)
-  --json              Output JSON progress lines for IPC (used by Electron)
-  --check-gpu         GPU diagnostics: probe driver, device, OptiX, then exit
-  --calibrate         Self-timed calibration: suppress progress, output throughput JSON to stdout
-```
-
----
-
-## Architecture
-
-### Module Map
-
-```
-src/
-├── main.rs              — CLI entry point, Cornell box scene construction
-├── lib.rs               — Module declarations, feature-gated cuda module
-├── camera.rs            — CPU render loop (rayon) + GPU render entry + PNG output
-├── vec3.rs              — Vec3 (x,y,z), Point3, Color aliases; SIMD f64 layout
-├── ray.rs               — Ray { origin, direction, time } — parametric ray with motion blur support
-├── rng.rs               — XORShift128+ PRNG wrapper; thread-local convenience + per-row golden-ratio deterministic seeding
-├── interval.rs          — [min, max] interval math (clamp, expand, surrounds)
-├── aabb.rs              — Axis-Aligned Bounding Box
-├── bvh.rs               — BVH tree (O(log n) hit test, spatial median split)
-├── hittable.rs          — HitRecord, Hittable enum (all geometry variants)
-├── hittable_list.rs     — Flat object list (scene root + light list)
-├── sphere.rs            — Analytic sphere: hit, pdf_value, random (solid-angle); stationary + moving (motion blur via Ray center)
-├── quad.rs              — Quadrilateral: hit, pdf_value, random (uniform area)
-├── quad_box.rs          — make_box() from min/max corners (6 quads)
-├── constant_medium.rs   — Volumetric fog (random distance sampling)
-├── material.rs          — Material enum + scatter + scattering_pdf
-├── texture.rs           — Texture enum (SolidColor, Checker, Image, Noise)
-├── onb.rs               — Orthonormal basis (Frisvad method); local ↔ world direction transform
-├── pdf.rs               — PDF enum (Sphere, Cosine, Mixture)
-├── perlin.rs            — 3D Perlin noise (hermite smoothing) + turbulence (fBM)
-├── color_io.rs          — linear_to_gamma, pixel_to_8bit/10bit/16bit encoding with NaN guard
-└── cuda/
-    ├── mod.rs           — CUDA feature gate
-    ├── optix.rs         — Rust FFI to optix_bridge C API + GPU diagnostics
-    ├── optix_bridge.h   — C header for bridge library
-    ├── optix_bridge.cu  — C/CUDA bridge: OptiX init, BVH build, render, denoiser
-    ├── scene.rs         — GpuScene: Hittable -> triangle mesh + vertex normals
-    └── shaders/
-        ├── common.h     — GpuFloat3, GpuMaterialData, CameraParams, LaunchParams
-        ├── raygen.cu    — Ray generation shader (MIS path tracing loop)
-        ├── closesthit.cu — Hit shader (barycentric normal interpolation)
-        ├── miss.cu      — Miss shader (background color)
-        ├── materials.h  — scatter_lambertian/metal/dielectric/isotropic
-        ├── pdf.h        — Cosine PDF value, mixture PDF
-        └── random.h     — XORShift128+ GPU RNG
-```
-
-### CPU Rendering Pipeline
-
-Entry point: `camera.rs` -> `Camera::render()`
-
-```
-For each pixel (rayon parallel):
-  For each sub-pixel sample (sqrt_spp x sqrt_spp):
-    1. Camera::get_ray() — stratified sample + defocus blur
-    2. ray_color() — recursive path tracing
-  Accumulate, scale by pixel_samples_scale
-  Convert to 10-bit gamma via linear_to_gamma + pixel_to_10bit
-Save as 16-bit PNG
-```
-
-`ray_color()` recursive logic:
-1. Hit test via BVH: `world.hit(ray, [0.001, inf])` -> `HitRecord`
-2. Miss -> return black (enclosed Cornell box)
-3. `material.emitted()` -> emission contribution (non-zero only for DiffuseLight)
-4. `material.scatter()` -> `ScatterRecord`:
-   - **DiffuseLight**: returns false -> only emission, path ends
-   - **Metal/Dielectric**: `skip_pdf=true` -> recurse directly with `attenuation * ray_color(reflected_ray)`
-   - **Lambertian/Isotropic**: `skip_pdf=false` -> MIS path below
-5. MIS: 50% light-list sampling / 50% BSDF sampling
-6. `pdf_val = 0.5 * lights.pdf_value(scattered) + 0.5 * bsdf_pdf.value(scattered)`
-7. Recurse: `sample_color = ray_color(scattered_ray, depth-1)`
-8. Return: `emission + attenuation * scattering_pdf * sample_color / pdf_val`
-
-### GPU Rendering Pipeline
-
-Entry point: `camera.rs` -> `Camera::render_gpu()`
-
-**Phase 1 — Scene Upload (CPU side):**
-```
-Hittable tree -> GpuScene::from_world()
-  ├── Tessellate spheres: 32x32 lat/lon grid -> 2048 triangles
-  ├── Tessellate quads: 2 triangles per quad
-  ├── Compute vertex normals (analytic for spheres, face normal for quads)
-  ├── Deduplicate materials -> GpuMaterialData buffer
-  └── Build per-triangle material index
-```
-
-**Phase 2 — GPU Setup (optix_bridge.cu):**
-```
-Upload vertices/normals/indices/materials -> GPU buffers
-Build RT Core BVH (hardware acceleration structure)
-Create OptiX pipeline (raygen + closesthit + miss)
-```
-
-**Phase 3 — Ray Generation (raygen.cu):**
-```
-For each pixel:
-  For each sub-pixel sample (sqrt_spp x sqrt_spp):
-    1. Stratified camera ray + defocus blur
-    2. Path tracing loop (max_depth iterations):
-       a. optixTrace() -> RT Core BVH traversal
-       b. Miss -> add background, break
-       c. Hit -> read barycentric-interpolated normal + material
-       d. DiffuseLight + front_face -> add emission, break
-       e. scatter() -> ScatterResult
-       f. skip_pdf (metal/dielectric) -> direct recursion
-       g. MIS: 50% BRDF / 50% hittable sampling
-          - Hittable: 50% light rectangle / 50% sphere solid-angle
-       h. pdf_val = 0.5*BSDF + 0.5*hittable_pdf
-       i. throughput *= attenuation * scattering_pdf / pdf_val
-    3. Accumulate, scale, clamp, write to framebuffer
-```
-
-**Phase 4 — Denoiser (optional, Tensor Core):**
-```
-OptiX AI HDR denoiser -> denoised output buffer
-```
-
-**Phase 5 — Readback & Save:**
-```
-Copy output buffer GPU -> CPU
-PNG encoding: linear_to_gamma -> 10-bit -> 16-bit (same as CPU)
-```
-
-### GPU Data Layout
-
-Host ↔ GPU struct layout must match exactly. Static assertions in `common.h` and `optix_bridge.cu` verify sizes at compile time.
-
-| Struct | Size | Fields |
-|--------|------|--------|
-| `GpuFloat3` | 12 bytes | `float x, y, z` (4-byte alignment) |
-| `GpuMaterialData` | 36 bytes | `u32 mat_type` + `GpuFloat3 albedo` + `f32 fuzz` + `f32 ir` + `GpuFloat3 emission` |
-| `CameraParams` | 148 bytes | 11× `GpuFloat3` (lookfrom, lookat, vup, u, v, w, pixel00_loc, pixel_delta_u, pixel_delta_v, defocus_disk_u, defocus_disk_v) + 4× `f32` (vfov, aspect_ratio, defocus_angle, focus_dist) |
-
-Material type IDs: 0=Lambertian, 1=Metal, 2=Dielectric, 3=DiffuseLight, 4=Isotropic.
-
-### Scene Construction
-
-The Cornell box scene is defined in `main.rs`:
-
-```
-Walls (5 quads):
-  Left:   red    (0.65, 0.05, 0.05)
-  Right:  green  (0.12, 0.45, 0.15)
-  Floor:  white  (0.73, 0.73, 0.73)
-  Ceiling: white (0.73, 0.73, 0.73)
-  Back:   white  (0.73, 0.73, 0.73)
-
-Light (quad):
-  Position: (213, 554, 227), size 130x105
-  Material: DiffuseLight, emission (15, 15, 15)
-
-Box:
-  6 quads from (0,0,0) to (165, 330, 165), white
-  Rotated 15 deg around Y axis
-  Translated to (265, 0, 295)
-
-Glass sphere:
-  Center: (190, 90, 190), radius: 90
-  Material: Dielectric, IOR 1.5
-
-Camera:
-  Position: (278, 278, -800), looking at (278, 278, 0)
-  FOV: 40 deg, no defocus blur
-```
-
-Light sampling list (separate from world geometry):
-- Light quad with empty (black) Lambertian material — for direction sampling
-- Glass sphere with empty (black) Lambertian material — for direction sampling
-
-### Multiple Importance Sampling (MIS)
-
-The path tracer uses 50/50 mixture MIS to reduce variance when sampling both direct lighting and indirect bounces.
-
-**MIS weight calculation:**
-
-```
-pdf_val = 0.5 * scattering_pdf + 0.5 * hittable_pdf
-
-where:
-  scattering_pdf = cos(theta) / PI        (cosine-weighted hemisphere)
-  hittable_pdf   = 0.5 * light_pdf + 0.5 * sphere_pdf
-  light_pdf      = dist^2 / (cos_light * area)   (if ray hits light rect)
-  sphere_pdf     = 1.0 / solid_angle             (if ray hits glass sphere)
-
-throughput *= attenuation * scattering_pdf / pdf_val
-```
-
-**Strategy selection (50/50):**
-- **Strategy 1 (BSDF)**: Sample direction from cosine-weighted hemisphere. Compute hittable PDF for that direction.
-- **Strategy 2 (Hittable)**: 50% sample point on light rectangle, 50% sample direction via solid-angle sphere sampling.
-
-**Sphere solid-angle sampling** (matching CPU `random_to_sphere`):
-1. Direction from hit point toward sphere center -> build ONB
-2. Sample z uniformly in [cos_theta_max, 1] where cos_theta_max = sqrt(1 - r^2/d^2)
-3. Sample phi uniformly in [0, 2pi]
-4. Transform local (sqrt(1-z^2)*cos_phi, sqrt(1-z^2)*sin_phi, z) via ONB
-
-### Material System
-
-| Material | scatter() returns | skip_pdf | scattering_pdf | Strategy |
-|----------|-------------------|----------|----------------|----------|
-| Lambertian | true | false | cos(theta)/pi | Cosine hemisphere |
-| Metal | true | true | N/A | Perfect/fuzzed reflection |
-| Dielectric | true | true | N/A | Refraction or Schlick reflection |
-| DiffuseLight | **false** | N/A | N/A | Only emission, path terminates |
-| Isotropic | true | false | 1/(4pi) | Uniform sphere |
-
-**Metal scatter** (CPU behavior):
-```rust
-reflected = reflect(ray).unit_vector() + fuzz * random_unit_vector()
-// NOT normalized — blur increases with distance
-```
-
-**Dielectric scatter:**
-```rust
-refraction_ratio = front_face ? 1.0/ir : ir
-if cannot_refract || schlick_reflectance(cos_theta, ratio) > rand():
-    reflect()      // total internal reflection or probabilistic
-else:
-    refract()      // Snell's law
-```
-
-### PDF System
-
-```
-Pdf enum:
-├── Sphere       -> value: 1/(4pi),         generate: random_unit_vector
-├── Cosine(Onb)  -> value: cos(theta)/pi,   generate: ONB x random_cosine_direction
-└── Mixture(p0,p1) -> value: avg of p0,p1,  generate: random pick p0 or p1
-```
-
-### Texture System
-
-Textures provide surface color variation. The `Texture` enum has four variants:
-
-| Variant | Fields | Description |
-|---------|--------|-------------|
-| `SolidColor` | `Color` | Constant color at all UV/points |
-| `Checker` | `inv_scale, even, odd` | 3D procedural checkerboard (two textures alternating in 3D space) |
-| `Image` | `data, width, height` | 2D image texture loaded from file via the `image` crate |
-| `Noise` | `noise: Perlin, scale` | Perlin noise marble-like pattern with configurable scale |
-
-The CPU `BsdfPdf` is constructed per material:
-- Lambertian -> `Pdf::Cosine(&normal)`
-- Isotropic -> `Pdf::Sphere()`
-
-`lights.pdf_value()` averages over all lights in the list (quad + sphere):
-```rust
-hittable_list.pdf_value() = avg(quad.pdf_value(), sphere.pdf_value())
-```
-
----
-
-## Build System
-
-### Cargo + build.rs
-
-Normal Rust compilation via Cargo. When `--features cuda` is enabled, `build.rs`:
-
-1. Locates CUDA Toolkit (nvcc) and OptiX SDK (optix.h)
-2. Compiles 3 `.cu` shaders to `.ptx` **in parallel** using `std::thread::scope` + NVCC
-3. Patches PTX ISA version from 9.1 -> 8.5 (CUDA 13.x generates 9.1 which OptiX 9.1 SDK rejects)
-4. Compiles `optix_bridge.cu` to a static library (`.lib`)
-5. Links: `optix_bridge.lib` (static) + `cudart.lib` + `cuda.lib` (dynamic from driver)
-
-### Multi-threaded compilation
-
-| Component | Parallelism |
-|-----------|-------------|
-| Cargo (rustc) | Per-crate parallelism (default: CPU cores) |
-| rustc backend | `codegen-units=1` (`.cargo/config.toml`) |
-| NVCC shaders | `std::thread::scope` — 3 shaders compiled concurrently |
-| LTO | `thin` — cross-crate inlining without serial bottleneck |
-
-Config: `.cargo/config.toml`
-```toml
-[build]
-rustflags = ["-C", "target-cpu=native", "-C", "link-arg=/STACK:16777216"]
-
-[profile.release]
-opt-level = 3
-lto = "thin"
-codegen-units = 1
-strip = true
-```
-
-### PTX architecture
-
-Shaders compiled with `--gpu-architecture=compute_75` (Turing). PTX is an intermediate representation — the NVIDIA driver JIT-compiles it to the actual GPU ISA at runtime. Compatible with Turing (RTX 20) through Blackwell (RTX 50) GPUs.
-
----
-
-## GPU Diagnostics
-
-```sh
-./rt-next-week.exe --check-gpu
-```
-
-Outputs JSON to stdout:
-```json
-{
-  "status": "ok",
-  "cuda": {
-    "available": true,
-    "device_name": "NVIDIA GeForce RTX 4090",
-    "driver_version": "13.2",
-    "compute_capability": "8.9",
-    "vram_mb": 16302,
-    "device_count": 1,
-    "warnings": null,
-    "error": null
-  },
-  "optix": {
-    "available": true,
-    "device_name": "NVIDIA GeForce RTX 4090",
-    "error": null
-  }
-}
-```
-
-Automatic warnings:
-- Driver < R560 -> "Driver too old: NVIDIA R560+ required for OptiX 9.x"
-- Compute capability < 7.5 -> "GPU may not run all shaders correctly"
-
----
-
-## Electron Frontend
-
-Location: `electron/`
-
-```
-electron/
-├── main.js          — Electron main process, IPC handlers, spawn management
-├── preload.js       — Context bridge: exposes safe API to renderer
-├── package.json     — Dependencies: electron, electron-builder
-├── electron-builder.yml — Build config (portable target)
-└── renderer/
-    ├── index.html   — UI layout
-    ├── renderer.js  — Render logic: calibration, progress, GPU status
-    └── style.css    — Dark theme styling
-```
-
-**IPC channels:**
-
-| Channel | Direction | Purpose |
-|---------|-----------|---------|
-| `check-gpu` | renderer -> main | Run `--check-gpu`, return parsed JSON |
-| `read-calibration` | renderer -> main | Load cached CPU calibration |
-| `read-gpu-calibration` | renderer -> main | Load cached GPU calibration |
-| `run-calibration` | renderer -> main | Run 160x90 benchmark render |
-| `start-render` | renderer -> main | Start full-resolution render |
-| `cancel-render` | renderer -> main | Kill running render process |
-| `render-progress` | main -> renderer | Progress update (completed/total pixels) |
-| `render-done` | main -> renderer | Render complete with output path |
-| `render-error` | main -> renderer | Render error with message |
-| `render-log` | main -> renderer | Raw stderr output lines |
-
-Output images are served via custom `rendered-file://` protocol (bypasses Node.js 512MB string limit on base64 data URLs).
-Protocol handler strips `?t=...` cache buster from URL path, serves with `Cache-Control: no-store` to prevent stale image display after re-render.
-
-**GPU status display** (in renderer.js):
-- Checks GPU availability on startup via `--check-gpu`
-- Shows: device name, compute capability, VRAM, driver version
-- Shows warnings if driver is old or GPU capability is low
-- Adjusts time estimate based on calibration benchmark
-
----
-
-## Testing
-
-91 unit tests across all modules. Run with:
-
-```sh
-cargo test --features cuda
-```
-
-Key test categories:
-
-| Module | Tests | What they verify |
-|--------|-------|-----------------|
-| `vec3` | 17 | Arithmetic, dot/cross, unit vector, RNG helpers, reflect/refract |
-| `interval` | 7 | Contains, surrounds, clamp, expand, add_offset |
-| `aabb` | 5 | Construction, hit test, box union, add_offset |
-| `bvh` | 5 | Hit/miss, closest-hit ordering, bounding box coverage, PDF positivity |
-| `sphere` | 4 | Hit center, miss, bbox, pdf_value |
-| `quad` | 4 | Hit center, parallel miss, bounds, pdf_value |
-| `camera` | 9 | Aspect ratio, height, seed determinism, JSON progress, gamma consistency |
-| `cuda::scene` | 12 | Sphere/quads tessellation, normals, material conversion, transform penetration, struct sizes/offsets |
-| `cuda::optix` | 1 | CameraParams size assertion (148 bytes) |
-| `color_io` | 12 | Gamma correction, all bit depths (8/10/16-bit), NaN guard, monotonicity |
-| `pdf` | 6 | Sphere/cosine/mixture value and generate, hemisphere direction |
-| `perlin` | 3 | Noise range, deterministic output, turb range |
-| `ray` | 2 | at() method |
-| `material` | (implicit) | Via camera + scene integration tests |
-
----
-
-## Packaging
-
-The Electron app is packaged as a portable (no-install) ZIP:
-
-```sh
-cd electron
-npm install
-npm run dist          # Full build: electron-builder -> electron/dist-pkg/
-```
-
-Manual repack (for updating only frontend or binary):
-```sh
-# Build app.asar from git-tracked source
-mkdir _asar_src
-cp electron/main.js electron/preload.js electron/package.json _asar_src/
-cp -r electron/renderer _asar_src/
-cd _asar_src && npx asar pack . ../electron/app.asar
-
-# Update ZIP
-python -c "
-import zipfile
-# Replace resources/app.asar and resources/rt-next-week.exe in ZIP
-"
-```
-
-Output: `electron/dist-pkg/` (portable ZIP, ~110 MB)
-
-Contents:
-- `RT Renderer.exe` — Electron executable
-- `resources/app.asar` — Frontend (JS, CSS, HTML)
-- `resources/rt-next-week.exe` — Rust rendering engine
-- `*.dll` — Chromium/Electron runtime dependencies
-
----
-
-## Requirements
-
-| Component | Development | Runtime |
-|-----------|-------------|---------|
-| Rust | 1.78+ | — |
-| CUDA Toolkit | 13.1 | — |
-| OptiX SDK | 9.1.0 | — |
-| Visual Studio | 2022 (Build Tools) | VC++ Redist 2015-2022 |
-| Node.js | 20+ (for Electron) | — |
-| NVIDIA Driver | R560+ | R560+ (includes OptiX 9.x runtime) |
-| NVIDIA GPU | Any CC 7.5+ | RTX 20-series or newer |
-| OS | Windows 10/11 | Windows 10/11 |
-
----
+> [:arrow_down: 跳转到英文版 (Jump to English)](#rt-renderer--physically-based-monte-carlo-path-tracer-en)
 
 # RT Renderer — 基于物理的蒙特卡洛路径追踪器
 
@@ -546,23 +6,23 @@ Peter Shirley《Ray Tracing: The Next Week》的 Rust 移植版，支持 NVIDIA 
 
 ## 目录
 
-- [概述](#概述-1)
-- [快速开始](#快速开始-1)
-- [命令行用法](#命令行用法-1)
-- [架构](#架构-1)
-  - [模块地图](#模块地图-1)
-  - [CPU 渲染管线](#cpu-渲染管线-1)
-  - [GPU 渲染管线](#gpu-渲染管线-1)
-  - [场景构建](#场景构建-1)
-  - [多重重要性采样 (MIS)](#多重重要性采样-mis-1)
-  - [材质系统](#材质系统-1)
-  - [PDF 系统](#pdf-系统-1)
-- [构建系统](#构建系统-1)
-- [GPU 诊断](#gpu-诊断-1)
-- [Electron 前端](#electron-前端-1)
-- [测试](#测试-1)
-- [打包](#打包-1)
-- [系统要求](#系统要求-1)
+- [概述](#概述)
+- [快速开始](#快速开始)
+- [命令行用法](#命令行用法)
+- [架构](#架构)
+  - [模块地图](#模块地图)
+  - [CPU 渲染管线](#cpu-渲染管线)
+  - [GPU 渲染管线](#gpu-渲染管线)
+  - [场景构建](#场景构建)
+  - [多重重要性采样 (MIS)](#多重重要性采样-mis)
+  - [材质系统](#材质系统)
+  - [PDF 系统](#pdf-系统)
+- [构建系统](#构建系统)
+- [GPU 诊断](#gpu-诊断)
+- [Electron 前端](#electron-前端)
+- [测试](#测试)
+- [打包](#打包)
+- [系统要求](#系统要求)
 
 ---
 
@@ -647,8 +107,8 @@ src/
 ├── lib.rs               — 模块声明，feature-gated cuda 模块
 ├── camera.rs            — CPU 渲染循环（rayon）+ GPU 渲染入口 + PNG 输出
 ├── vec3.rs              — Vec3 (x,y,z)，Point3，Color 别名；SIMD f64 布局
-├── ray.rs               — Ray { origin, direction, time } — 参数化光线，支持运动模糊
-├── rng.rs               — XORShift128+ PRNG 封装；线程局部便利接口 + 逐行黄金比例确定性种子
+├── ray.rs               — Ray { orig, dir, tm } — 参数化光线，支持运动模糊
+├── rng.rs               — SmallRng (ChaCha12) PRNG 封装；线程局部便利接口
 ├── interval.rs          — [min, max] 区间运算（clamp, expand, surrounds）
 ├── aabb.rs              — 轴对齐包围盒
 ├── bvh.rs               — BVH 树（O(log n) 碰撞检测，空间中位数分割）
@@ -660,7 +120,7 @@ src/
 ├── constant_medium.rs   — 体积雾（随机距离采样）
 ├── material.rs          — Material 枚举 + scatter + scattering_pdf
 ├── texture.rs           — Texture 枚举（SolidColor, Checker, Image, Noise）
-├── onb.rs               — 标准正交基（Frisvad 方法）；局部 ↔ 世界方向变换
+├── onb.rs               — 标准正交基（Hughes-Moeller 方法）；局部 ↔ 世界方向变换
 ├── pdf.rs               — PDF 枚举（Sphere, Cosine, Mixture）
 ├── perlin.rs            — 3D Perlin 噪声（hermite 平滑）+ turbulence（fBM）
 ├── color_io.rs          — linear_to_gamma，pixel_to_8bit/10bit/16bit 编码（含 NaN 保护）
@@ -766,7 +226,7 @@ PNG 编码：linear_to_gamma -> 10 位 -> 16 位（与 CPU 一致）
 |--------|------|------|
 | `GpuFloat3` | 12 字节 | `float x, y, z`（4 字节对齐） |
 | `GpuMaterialData` | 36 字节 | `u32 mat_type` + `GpuFloat3 albedo` + `f32 fuzz` + `f32 ir` + `GpuFloat3 emission` |
-| `CameraParams` | 148 字节 | 11× `GpuFloat3`（lookfrom, lookat, vup, u, v, w, pixel00_loc, pixel_delta_u, pixel_delta_v, defocus_disk_u, defocus_disk_v）+ 4× `f32`（vfov, aspect_ratio, defocus_angle, focus_dist）|
+| `CameraParams` | 148 字节 | lookfrom, lookat, vup [GpuFloat3]; vfov, aspect_ratio, defocus_angle, focus_dist [f32]; u, v, w, pixel00_loc, pixel_delta_u, pixel_delta_v, defocus_disk_u, defocus_disk_v [GpuFloat3] |
 
 材质类型 ID：0=Lambertian, 1=Metal, 2=Dielectric, 3=DiffuseLight, 4=Isotropic。
 
@@ -912,7 +372,7 @@ hittable_list.pdf_value() = avg(quad.pdf_value(), sphere.pdf_value())
 配置：`.cargo/config.toml`
 ```toml
 [build]
-rustflags = ["-C", "target-cpu=native", "-C", "link-arg=/STACK:16777216"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/STACK:16777216"]
 
 [profile.release]
 opt-level = 3
@@ -933,7 +393,12 @@ strip = true
 ./rt-next-week.exe --check-gpu
 ```
 
-向 stdout 输出 JSON：
+向 stdout 输出 JSON，`status` 可能的值：
+- `"ok"` — GPU 完全可用
+- `"no_optix"` — CUDA 驱动可用但 OptiX 初始化失败
+- `"no_cuda_driver"` — 未检测到 CUDA 驱动
+- `"not_compiled"` — 二进制未启用 CUDA 功能编译
+
 ```json
 {
   "status": "ok",
@@ -971,6 +436,9 @@ electron/
 ├── preload.js       — 上下文桥接：向渲染器暴露安全 API
 ├── package.json     — 依赖：electron, electron-builder
 ├── electron-builder.yml — 构建配置（便携版目标）
+├── assets/
+│   ├── icon.ico     — 应用图标
+│   └── w700d1q75cms.jpg — 背景图
 └── renderer/
     ├── index.html   — UI 布局
     ├── renderer.js  — 渲染逻辑：校准、进度、GPU 状态
@@ -984,7 +452,7 @@ electron/
 | `check-gpu` | 渲染器 -> 主进程 | 运行 `--check-gpu`，返回解析后的 JSON |
 | `read-calibration` | 渲染器 -> 主进程 | 加载缓存的 CPU 校准数据 |
 | `read-gpu-calibration` | 渲染器 -> 主进程 | 加载缓存的 GPU 校准数据 |
-| `run-calibration` | 渲染器 -> 主进程 | 运行 160x90 基准渲染 |
+| `run-calibration` | 渲染器 -> 主进程 | CPU: 320x180, 8 spp / GPU: 1280x720, 4 spp 基准渲染 |
 | `start-render` | 渲染器 -> 主进程 | 开始完整分辨率渲染 |
 | `cancel-render` | 渲染器 -> 主进程 | 终止正在运行的渲染进程 |
 | `render-progress` | 主进程 -> 渲染器 | 进度更新（已完成/总像素数） |
@@ -1018,11 +486,11 @@ cargo test --features cuda
 | `vec3` | 17 | 算术运算、点积/叉积、单位向量、随机辅助函数、反射/折射 |
 | `interval` | 7 | Contains、Surrounds、Clamp、Expand、add_offset |
 | `aabb` | 5 | 构建、碰撞检测、包围盒合并、add_offset |
-| `bvh` | 5 | 命中/未命中、最近命中顺序、包围盒覆盖、PDF 正值性 |
+| `bvh` | 6 | 命中/未命中、最近命中顺序、包围盒覆盖、PDF 正值性 |
 | `sphere` | 4 | 命中球心、未命中、包围盒、pdf_value |
 | `quad` | 4 | 命中中心、平行未命中、边界、pdf_value |
-| `camera` | 9 | 宽高比、高度、种子确定性、JSON 进度、gamma 一致性 |
-| `cuda::scene` | 12 | 球体/四边形细分、法线、材质转换、变换穿透、结构体大小/偏移 |
+| `camera` | 11 | 宽高比、高度、种子确定性、JSON 进度、gamma 一致性、零采样/极端宽高比防御 |
+| `cuda::scene` | 13 | 球体/四边形细分、法线、材质转换、变换穿透、结构体大小/偏移 |
 | `cuda::optix` | 1 | CameraParams 大小断言（148 字节） |
 | `color_io` | 12 | Gamma 校正、所有位深（8/10/16 位）、NaN 保护、单调性 |
 | `pdf` | 6 | Sphere/Cosine/Mixture 的值和生成、半球方向 |
@@ -1079,3 +547,555 @@ import zipfile
 | NVIDIA 驱动 | R560+ | R560+（包含 OptiX 9.x 运行时）|
 | NVIDIA GPU | 计算能力 7.5+ | RTX 20 系列或更新 |
 | 操作系统 | Windows 10/11 | Windows 10/11 |
+
+---
+> [:arrow_down: 跳转到中文版 (Jump to Chinese)](#rt-renderer--%E5%9F%BA%E4%BA%8E%E7%89%A9%E7%90%86%E7%9A%84%E8%92%99%E7%89%B9%E5%8D%A1%E6%B4%9B%E8%B7%AF%E5%BE%84%E8%BF%BD%E8%B8%AA%E5%99%A8)
+
+# RT Renderer — Physically Based Monte Carlo Path Tracer
+
+Rust port of Peter Shirley's *Ray Tracing: The Next Week* with NVIDIA OptiX GPU acceleration and Electron desktop frontend.
+
+## Table of Contents
+
+- [Overview](#overview-en)
+- [Quick Start](#quick-start-en)
+- [CLI Usage](#cli-usage-en)
+- [Architecture](#architecture-en)
+  - [Module Map](#module-map-en)
+  - [CPU Rendering Pipeline](#cpu-rendering-pipeline-en)
+  - [GPU Rendering Pipeline](#gpu-rendering-pipeline-en)
+  - [Scene Construction](#scene-construction-en)
+  - [Multiple Importance Sampling (MIS)](#multiple-importance-sampling-mis-en)
+  - [Material System](#material-system-en)
+  - [PDF System](#pdf-system-en)
+- [Build System](#build-system-en)
+- [GPU Diagnostics](#gpu-diagnostics-en)
+- [Electron Frontend](#electron-frontend-en)
+- [Testing](#testing-en)
+- [Packaging](#packaging-en)
+- [Requirements](#requirements-en)
+
+---
+
+## Overview
+
+RT Renderer is a physically based path tracer implementing the techniques from *Ray Tracing: The Next Week*. It supports two rendering backends:
+
+| Backend | Technology | Performance |
+|---------|-----------|-------------|
+| CPU | Rust + rayon parallel | ~200 px/sample/ms (16-core) |
+| GPU | CUDA + NVIDIA OptiX 9.1 + RT Core BVH | ~10,000 px/sample/ms (high-end NVIDIA GPU) |
+
+Both backends produce visually identical output given the same scene and seed (differ only by RNG noise).
+
+Key features:
+- Cornell box scene with box, glass sphere, area light
+- Multiple Importance Sampling (50/50 BSDF + light mixture)
+- RT Core hardware-accelerated BVH traversal
+- OptiX AI denoiser (Tensor Core, optional)
+- Barycentric-interpolated vertex normals for smooth spheres
+- Solid-angle sphere sampling for MIS
+- Deterministic rendering with `--seed`
+- Electron desktop UI with progress visualization
+
+---
+
+## Quick Start
+
+```sh
+# One-click: CPU build + Electron package
+.\build.bat
+
+# One-click: CPU + GPU build + Electron package
+.\build.bat --gpu
+
+# CPU render (default: 4K, 400 spp, 75 bounces)
+cargo build --release
+./target/release/rt-next-week.exe --output scene.png
+
+# GPU render (requires CUDA 13.1 + OptiX 9.1 SDK)
+cargo build --release --features cuda
+./target/release/rt-next-week.exe --gpu --output scene.png
+
+# GPU diagnostics
+./target/release/rt-next-week.exe --check-gpu
+
+# Run tests
+cargo test --features cuda
+```
+
+---
+
+## CLI Usage
+
+```
+rt-next-week.exe [OPTIONS]
+
+Options:
+  --width <N>         Image width (default: 3840)
+  --height <N>        Image height (default: 2160, or derived from aspect)
+  --aspect-ratio <R>  Aspect ratio (default: 1.777 = 16:9)
+  --samples <N>       Samples per pixel, stratified sqrt(N)xsqrt(N) (default: 400)
+  --max-depth <N>     Maximum ray bounces (default: 75)
+  --output <PATH>     Output PNG path (default: output.png)
+  --seed <N>          Random seed for deterministic rendering
+  --gpu               Use GPU (OptiX RT Core) backend
+  --denoise           Enable OptiX AI denoiser (GPU only)
+  --json              Output JSON progress lines for IPC (used by Electron)
+  --check-gpu         GPU diagnostics: probe driver, device, OptiX, then exit
+  --calibrate         Self-timed calibration: suppress progress, output throughput JSON to stdout
+```
+
+---
+
+## Architecture
+
+### Module Map
+
+```
+src/
+├── main.rs              — CLI entry point, Cornell box scene construction
+├── lib.rs               — Module declarations, feature-gated cuda module
+├── camera.rs            — CPU render loop (rayon) + GPU render entry + PNG output
+├── vec3.rs              — Vec3 (x,y,z), Point3, Color aliases; SIMD f64 layout
+├── ray.rs               — Ray { orig, dir, tm } — parametric ray with motion blur support
+├── rng.rs               — SmallRng (ChaCha12) PRNG wrapper; thread-local convenience
+├── interval.rs          — [min, max] interval math (clamp, expand, surrounds)
+├── aabb.rs              — Axis-Aligned Bounding Box
+├── bvh.rs               — BVH tree (O(log n) hit test, spatial median split)
+├── hittable.rs          — HitRecord, Hittable enum (all geometry variants)
+├── hittable_list.rs     — Flat object list (scene root + light list)
+├── sphere.rs            — Analytic sphere: hit, pdf_value, random (solid-angle); stationary + moving (motion blur via Ray center)
+├── quad.rs              — Quadrilateral: hit, pdf_value, random (uniform area)
+├── quad_box.rs          — make_box() from min/max corners (6 quads)
+├── constant_medium.rs   — Volumetric fog (random distance sampling)
+├── material.rs          — Material enum + scatter + scattering_pdf
+├── texture.rs           — Texture enum (SolidColor, Checker, Image, Noise)
+├── onb.rs               — Orthonormal basis (Hughes-Moeller method); local ↔ world direction transform
+├── pdf.rs               — PDF enum (Sphere, Cosine, Mixture)
+├── perlin.rs            — 3D Perlin noise (hermite smoothing) + turbulence (fBM)
+├── color_io.rs          — linear_to_gamma, pixel_to_8bit/10bit/16bit encoding with NaN guard
+└── cuda/
+    ├── mod.rs           — CUDA feature gate
+    ├── optix.rs         — Rust FFI to optix_bridge C API + GPU diagnostics
+    ├── optix_bridge.h   — C header for bridge library
+    ├── optix_bridge.cu  — C/CUDA bridge: OptiX init, BVH build, render, denoiser
+    ├── scene.rs         — GpuScene: Hittable -> triangle mesh + vertex normals
+    └── shaders/
+        ├── common.h     — GpuFloat3, GpuMaterialData, CameraParams, LaunchParams
+        ├── raygen.cu    — Ray generation shader (MIS path tracing loop)
+        ├── closesthit.cu — Hit shader (barycentric normal interpolation)
+        ├── miss.cu      — Miss shader (background color)
+        ├── materials.h  — scatter_lambertian/metal/dielectric/isotropic
+        ├── pdf.h        — Cosine PDF value, mixture PDF
+        └── random.h     — XORShift128+ GPU RNG
+```
+
+### CPU Rendering Pipeline
+
+Entry point: `camera.rs` -> `Camera::render()`
+
+```
+For each pixel (rayon parallel):
+  For each sub-pixel sample (sqrt_spp x sqrt_spp):
+    1. Camera::get_ray() — stratified sample + defocus blur
+    2. ray_color() — recursive path tracing
+  Accumulate, scale by pixel_samples_scale
+  Convert to 10-bit gamma via linear_to_gamma + pixel_to_10bit
+Save as 16-bit PNG
+```
+
+`ray_color()` recursive logic:
+1. Hit test via BVH: `world.hit(ray, [0.001, inf])` -> `HitRecord`
+2. Miss -> return black (enclosed Cornell box)
+3. `material.emitted()` -> emission contribution (non-zero only for DiffuseLight)
+4. `material.scatter()` -> `ScatterRecord`:
+   - **DiffuseLight**: returns false -> only emission, path ends
+   - **Metal/Dielectric**: `skip_pdf=true` -> recurse directly with `attenuation * ray_color(reflected_ray)`
+   - **Lambertian/Isotropic**: `skip_pdf=false` -> MIS path below
+5. MIS: 50% light-list sampling / 50% BSDF sampling
+6. `pdf_val = 0.5 * lights.pdf_value(scattered) + 0.5 * bsdf_pdf.value(scattered)`
+7. Recurse: `sample_color = ray_color(scattered_ray, depth-1)`
+8. Return: `emission + attenuation * scattering_pdf * sample_color / pdf_val`
+
+### GPU Rendering Pipeline
+
+Entry point: `camera.rs` -> `Camera::render_gpu()`
+
+**Phase 1 — Scene Upload (CPU side):**
+```
+Hittable tree -> GpuScene::from_world()
+  ├── Tessellate spheres: 32x32 lat/lon grid -> 2048 triangles
+  ├── Tessellate quads: 2 triangles per quad
+  ├── Compute vertex normals (analytic for spheres, face normal for quads)
+  ├── Deduplicate materials -> GpuMaterialData buffer
+  └── Build per-triangle material index
+```
+
+**Phase 2 — GPU Setup (optix_bridge.cu):**
+```
+Upload vertices/normals/indices/materials -> GPU buffers
+Build RT Core BVH (hardware acceleration structure)
+Create OptiX pipeline (raygen + closesthit + miss)
+```
+
+**Phase 3 — Ray Generation (raygen.cu):**
+```
+For each pixel:
+  For each sub-pixel sample (sqrt_spp x sqrt_spp):
+    1. Stratified camera ray + defocus blur
+    2. Path tracing loop (max_depth iterations):
+       a. optixTrace() -> RT Core BVH traversal
+       b. Miss -> add background, break
+       c. Hit -> read barycentric-interpolated normal + material
+       d. DiffuseLight + front_face -> add emission, break
+       e. scatter() -> ScatterResult
+       f. skip_pdf (metal/dielectric) -> direct recursion
+       g. MIS: 50% BRDF / 50% hittable sampling
+          - Hittable: 50% light rectangle / 50% sphere solid-angle
+       h. pdf_val = 0.5*BSDF + 0.5*hittable_pdf
+       i. throughput *= attenuation * scattering_pdf / pdf_val
+    3. Accumulate, scale, clamp, write to framebuffer
+```
+
+**Phase 4 — Denoiser (optional, Tensor Core):**
+```
+OptiX AI HDR denoiser -> denoised output buffer
+```
+
+**Phase 5 — Readback & Save:**
+```
+Copy output buffer GPU -> CPU
+PNG encoding: linear_to_gamma -> 10-bit -> 16-bit (same as CPU)
+```
+
+### GPU Data Layout
+
+Host ↔ GPU struct layout must match exactly. Static assertions in `common.h` and `optix_bridge.cu` verify sizes at compile time.
+
+| Struct | Size | Fields |
+|--------|------|--------|
+| `GpuFloat3` | 12 bytes | `float x, y, z` (4-byte alignment) |
+| `GpuMaterialData` | 36 bytes | `u32 mat_type` + `GpuFloat3 albedo` + `f32 fuzz` + `f32 ir` + `GpuFloat3 emission` |
+| `CameraParams` | 148 bytes | lookfrom, lookat, vup [GpuFloat3]; vfov, aspect_ratio, defocus_angle, focus_dist [f32]; u, v, w, pixel00_loc, pixel_delta_u, pixel_delta_v, defocus_disk_u, defocus_disk_v [GpuFloat3] |
+
+Material type IDs: 0=Lambertian, 1=Metal, 2=Dielectric, 3=DiffuseLight, 4=Isotropic.
+
+### Scene Construction
+
+The Cornell box scene is defined in `main.rs`:
+
+```
+Walls (5 quads):
+  Left:   red    (0.65, 0.05, 0.05)
+  Right:  green  (0.12, 0.45, 0.15)
+  Floor:  white  (0.73, 0.73, 0.73)
+  Ceiling: white (0.73, 0.73, 0.73)
+  Back:   white  (0.73, 0.73, 0.73)
+
+Light (quad):
+  Position: (213, 554, 227), size 130x105
+  Material: DiffuseLight, emission (15, 15, 15)
+
+Box:
+  6 quads from (0,0,0) to (165, 330, 165), white
+  Rotated 15 deg around Y axis
+  Translated to (265, 0, 295)
+
+Glass sphere:
+  Center: (190, 90, 190), radius: 90
+  Material: Dielectric, IOR 1.5
+
+Camera:
+  Position: (278, 278, -800), looking at (278, 278, 0)
+  FOV: 40 deg, no defocus blur
+```
+
+Light sampling list (separate from world geometry):
+- Light quad with empty (black) Lambertian material — for direction sampling
+- Glass sphere with empty (black) Lambertian material — for direction sampling
+
+### Multiple Importance Sampling (MIS)
+
+The path tracer uses 50/50 mixture MIS to reduce variance when sampling both direct lighting and indirect bounces.
+
+**MIS weight calculation:**
+
+```
+pdf_val = 0.5 * scattering_pdf + 0.5 * hittable_pdf
+
+where:
+  scattering_pdf = cos(theta) / PI        (cosine-weighted hemisphere)
+  hittable_pdf   = 0.5 * light_pdf + 0.5 * sphere_pdf
+  light_pdf      = dist^2 / (cos_light * area)   (if ray hits light rect)
+  sphere_pdf     = 1.0 / solid_angle             (if ray hits glass sphere)
+
+throughput *= attenuation * scattering_pdf / pdf_val
+```
+
+**Strategy selection (50/50):**
+- **Strategy 1 (BSDF)**: Sample direction from cosine-weighted hemisphere. Compute hittable PDF for that direction.
+- **Strategy 2 (Hittable)**: 50% sample point on light rectangle, 50% sample direction via solid-angle sphere sampling.
+
+**Sphere solid-angle sampling** (matching CPU `random_to_sphere`):
+1. Direction from hit point toward sphere center -> build ONB
+2. Sample z uniformly in [cos_theta_max, 1] where cos_theta_max = sqrt(1 - r^2/d^2)
+3. Sample phi uniformly in [0, 2pi]
+4. Transform local (sqrt(1-z^2)*cos_phi, sqrt(1-z^2)*sin_phi, z) via ONB
+
+### Material System
+
+| Material | scatter() returns | skip_pdf | scattering_pdf | Strategy |
+|----------|-------------------|----------|----------------|----------|
+| Lambertian | true | false | cos(theta)/pi | Cosine hemisphere |
+| Metal | true | true | N/A | Perfect/fuzzed reflection |
+| Dielectric | true | true | N/A | Refraction or Schlick reflection |
+| DiffuseLight | **false** | N/A | N/A | Only emission, path terminates |
+| Isotropic | true | false | 1/(4pi) | Uniform sphere |
+
+**Metal scatter** (CPU behavior):
+```rust
+reflected = reflect(ray).unit_vector() + fuzz * random_unit_vector()
+// NOT normalized — blur increases with distance
+```
+
+**Dielectric scatter:**
+```rust
+refraction_ratio = front_face ? 1.0/ir : ir
+if cannot_refract || schlick_reflectance(cos_theta, ratio) > rand():
+    reflect()      // total internal reflection or probabilistic
+else:
+    refract()      // Snell's law
+```
+
+### PDF System
+
+```
+Pdf enum:
+├── Sphere       -> value: 1/(4pi),         generate: random_unit_vector
+├── Cosine(Onb)  -> value: cos(theta)/pi,   generate: ONB x random_cosine_direction
+└── Mixture(p0,p1) -> value: avg of p0,p1,  generate: random pick p0 or p1
+```
+
+### Texture System
+
+Textures provide surface color variation. The `Texture` enum has four variants:
+
+| Variant | Fields | Description |
+|---------|--------|-------------|
+| `SolidColor` | `Color` | Constant color at all UV/points |
+| `Checker` | `inv_scale, even, odd` | 3D procedural checkerboard (two textures alternating in 3D space) |
+| `Image` | `data, width, height` | 2D image texture loaded from file via the `image` crate |
+| `Noise` | `noise: Perlin, scale` | Perlin noise marble-like pattern with configurable scale |
+
+The CPU `BsdfPdf` is constructed per material:
+- Lambertian -> `Pdf::Cosine(&normal)`
+- Isotropic -> `Pdf::Sphere()`
+
+`lights.pdf_value()` averages over all lights in the list (quad + sphere):
+```rust
+hittable_list.pdf_value() = avg(quad.pdf_value(), sphere.pdf_value())
+```
+
+---
+
+## Build System
+
+### Cargo + build.rs
+
+Normal Rust compilation via Cargo. When `--features cuda` is enabled, `build.rs`:
+
+1. Locates CUDA Toolkit (nvcc) and OptiX SDK (optix.h)
+2. Compiles 3 `.cu` shaders to `.ptx` **in parallel** using `std::thread::scope` + NVCC
+3. Patches PTX ISA version from 9.1 -> 8.5 (CUDA 13.x generates 9.1 which OptiX 9.1 SDK rejects)
+4. Compiles `optix_bridge.cu` to a static library (`.lib`)
+5. Links: `optix_bridge.lib` (static) + `cudart.lib` + `cuda.lib` (dynamic from driver)
+
+### Multi-threaded compilation
+
+| Component | Parallelism |
+|-----------|-------------|
+| Cargo (rustc) | Per-crate parallelism (default: CPU cores) |
+| rustc backend | `codegen-units=1` (`.cargo/config.toml`) |
+| NVCC shaders | `std::thread::scope` — 3 shaders compiled concurrently |
+| LTO | `thin` — cross-crate inlining without serial bottleneck |
+
+Config: `.cargo/config.toml`
+```toml
+[build]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/STACK:16777216"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+```
+
+### PTX architecture
+
+Shaders compiled with `--gpu-architecture=compute_75` (Turing). PTX is an intermediate representation — the NVIDIA driver JIT-compiles it to the actual GPU ISA at runtime. Compatible with Turing (RTX 20) through Blackwell (RTX 50) GPUs.
+
+---
+
+## GPU Diagnostics
+
+```sh
+./rt-next-week.exe --check-gpu
+```
+
+Outputs JSON to stdout. Possible `status` values:
+- `"ok"` — GPU fully operational
+- `"no_optix"` — CUDA driver available but OptiX init failed
+- `"no_cuda_driver"` — No CUDA driver detected
+- `"not_compiled"` — Binary built without CUDA feature
+
+```json
+{
+  "status": "ok",
+  "cuda": {
+    "available": true,
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "driver_version": "13.2",
+    "compute_capability": "8.9",
+    "vram_mb": 16302,
+    "device_count": 1,
+    "warnings": null,
+    "error": null
+  },
+  "optix": {
+    "available": true,
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "error": null
+  }
+}
+```
+
+Automatic warnings:
+- Driver < R560 -> "Driver too old: NVIDIA R560+ required for OptiX 9.x"
+- Compute capability < 7.5 -> "GPU may not run all shaders correctly"
+
+---
+
+## Electron Frontend
+
+Location: `electron/`
+
+```
+electron/
+├── main.js          — Electron main process, IPC handlers, spawn management
+├── preload.js       — Context bridge: exposes safe API to renderer
+├── package.json     — Dependencies: electron, electron-builder
+├── electron-builder.yml — Build config (portable target)
+├── assets/
+│   ├── icon.ico     — App icon
+│   └── w700d1q75cms.jpg — Background image
+└── renderer/
+    ├── index.html   — UI layout
+    ├── renderer.js  — Render logic: calibration, progress, GPU status
+    └── style.css    — Dark theme styling
+```
+
+**IPC channels:**
+
+| Channel | Direction | Purpose |
+|---------|-----------|---------|
+| `check-gpu` | renderer -> main | Run `--check-gpu`, return parsed JSON |
+| `read-calibration` | renderer -> main | Load cached CPU calibration |
+| `read-gpu-calibration` | renderer -> main | Load cached GPU calibration |
+| `run-calibration` | renderer -> main | CPU: 320x180 at 8 spp / GPU: 1280x720 at 4 spp benchmark |
+| `start-render` | renderer -> main | Start full-resolution render |
+| `cancel-render` | renderer -> main | Kill running render process |
+| `render-progress` | main -> renderer | Progress update (completed/total pixels) |
+| `render-done` | main -> renderer | Render complete with output path |
+| `render-error` | main -> renderer | Render error with message |
+| `render-log` | main -> renderer | Raw stderr output lines |
+
+Output images are served via custom `rendered-file://` protocol (bypasses Node.js 512MB string limit on base64 data URLs).
+Protocol handler strips `?t=...` cache buster from URL path, serves with `Cache-Control: no-store` to prevent stale image display after re-render.
+
+**GPU status display** (in renderer.js):
+- Checks GPU availability on startup via `--check-gpu`
+- Shows: device name, compute capability, VRAM, driver version
+- Shows warnings if driver is old or GPU capability is low
+- Adjusts time estimate based on calibration benchmark
+
+---
+
+## Testing
+
+91 unit tests across all modules. Run with:
+
+```sh
+cargo test --features cuda
+```
+
+Key test categories:
+
+| Module | Tests | What they verify |
+|--------|-------|-----------------|
+| `vec3` | 17 | Arithmetic, dot/cross, unit vector, RNG helpers, reflect/refract |
+| `interval` | 7 | Contains, surrounds, clamp, expand, add_offset |
+| `aabb` | 5 | Construction, hit test, box union, add_offset |
+| `bvh` | 6 | Hit/miss, closest-hit ordering, bounding box coverage, PDF positivity |
+| `sphere` | 4 | Hit center, miss, bbox, pdf_value |
+| `quad` | 4 | Hit center, parallel miss, bounds, pdf_value |
+| `camera` | 11 | Aspect ratio, height, seed determinism, JSON progress, gamma consistency, clamp guards |
+| `cuda::scene` | 13 | Sphere/quads tessellation, normals, material conversion, transform penetration, struct sizes/offsets |
+| `cuda::optix` | 1 | CameraParams size assertion (148 bytes) |
+| `color_io` | 12 | Gamma correction, all bit depths (8/10/16-bit), NaN guard, monotonicity |
+| `pdf` | 6 | Sphere/cosine/mixture value and generate, hemisphere direction |
+| `perlin` | 3 | Noise range, deterministic output, turb range |
+| `ray` | 2 | at() method |
+| `material` | (implicit) | Via camera + scene integration tests |
+
+---
+
+## Packaging
+
+The Electron app is packaged as a portable (no-install) ZIP:
+
+```sh
+cd electron
+npm install
+npm run dist          # Full build: electron-builder -> electron/dist-pkg/
+```
+
+Manual repack (for updating only frontend or binary):
+```sh
+# Build app.asar from git-tracked source
+mkdir _asar_src
+cp electron/main.js electron/preload.js electron/package.json _asar_src/
+cp -r electron/renderer _asar_src/
+cd _asar_src && npx asar pack . ../electron/app.asar
+
+# Update ZIP
+python -c "
+import zipfile
+# Replace resources/app.asar and resources/rt-next-week.exe in ZIP
+"
+```
+
+Output: `electron/dist-pkg/` (portable ZIP, ~110 MB)
+
+Contents:
+- `RT Renderer.exe` — Electron executable
+- `resources/app.asar` — Frontend (JS, CSS, HTML)
+- `resources/rt-next-week.exe` — Rust rendering engine
+- `*.dll` — Chromium/Electron runtime dependencies
+
+---
+
+## Requirements
+
+| Component | Development | Runtime |
+|-----------|-------------|---------|
+| Rust | 1.78+ | — |
+| CUDA Toolkit | 13.1 | — |
+| OptiX SDK | 9.1.0 | — |
+| Visual Studio | 2022 (Build Tools) | VC++ Redist 2015-2022 |
+| Node.js | 20+ (for Electron) | — |
+| NVIDIA Driver | R560+ | R560+ (includes OptiX 9.x runtime) |
+| NVIDIA GPU | Any CC 7.5+ | RTX 20-series or newer |
+| OS | Windows 10/11 | Windows 10/11 |
+

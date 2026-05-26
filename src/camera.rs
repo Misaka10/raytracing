@@ -159,8 +159,8 @@ impl Camera {
     }
 
     #[cfg(feature = "cuda")]
-    /// Recursively search the hittable tree for the first area light quad.
-    /// Uses BVH reference traversal (visit_leaves) to avoid subtree cloning.
+    /// 递归搜索碰撞体树，找到第一个面光源四边形。
+    /// 使用 BVH 引用遍历 (visit_leaves) 避免子树克隆。
     fn find_light_quad(&self, hittable: &Hittable) -> Option<([f32; 3], [f32; 3], [f32; 3], f32)> {
         self.find_light_quad_inner(hittable, true)
     }
@@ -253,8 +253,8 @@ impl Camera {
     }
 
     #[cfg(feature = "cuda")]
-    /// Recursively search the hittable tree for the glass sphere (dielectric material).
-    /// Uses BVH reference traversal (visit_leaves) to avoid subtree cloning.
+    /// 递归搜索碰撞体树，找到玻璃球（Dielectric 材质）。
+    /// 使用 BVH 引用遍历 (visit_leaves) 避免子树克隆。
     fn find_glass_sphere(&self, hittable: &Hittable) -> Option<([f32; 3], f32)> {
         match hittable {
             Hittable::Sphere(s) => {
@@ -348,7 +348,7 @@ impl Camera {
         let spp = self.samples_per_pixel;
         let sqrt_spp = self.sqrt_spp;
 
-        // Find area light geometry for importance sampling (before world flattening)
+        // 在场景扁平化之前找到面光源几何体，用于重要性采样
         let light_info = self.find_light_quad(world);
         let sphere_info = self.find_glass_sphere(world);
 
@@ -356,7 +356,7 @@ impl Camera {
             anyhow::bail!("GPU 渲染需要场景中存在 DiffuseLight 四边形用于重要性采样");
         }
 
-        // Build GPU scene from world
+        // 从世界构建 GPU 场景
         let gpu_scene = GpuScene::from_world(world);
         if gpu_scene.vertices.is_empty() || gpu_scene.indices.is_empty() {
             anyhow::bail!("GPU scene has no geometry");
@@ -369,14 +369,14 @@ impl Camera {
             gpu_scene.materials.len()
         );
 
-        // Load PTX shaders
+        // 加载 PTX 着色器
         let (ptx_raygen, ptx_ch, ptx_ms) = optix::load_ptx_shaders();
 
-        // Init bridge
+        // 初始化 OptiX 桥接
         let mut bridge = OptiXBridge::new(ptx_raygen, ptx_ch, ptx_ms)
             .ok_or_else(|| anyhow::anyhow!("Failed to initialize OptiX bridge"))?;
 
-        // Build acceleration structure
+        // 构建加速结构（RT Core BVH）
         let tri_count = gpu_scene.tri_to_material.len() as i32;
         let vertex_count = (gpu_scene.vertices.len() / 3) as i32;
         if !bridge.build_accel(
@@ -389,20 +389,20 @@ impl Camera {
             anyhow::bail!("Failed to build BVH: {}", bridge.get_error());
         }
 
-        // Upload materials
+        // 上传材质数据到 GPU
         if !bridge.set_materials(&gpu_scene.materials) {
             anyhow::bail!("Failed to upload materials: {}", bridge.get_error());
         }
 
-        // Upload per-triangle material indices
+        // 上传每个三角形的材质索引
         if !bridge.set_tri_material(&gpu_scene.tri_to_material) {
             anyhow::bail!("Failed to upload tri_material: {}", bridge.get_error());
         }
 
-        // Set render params
+        // 设置渲染参数
         bridge.set_render_params(sqrt_spp, self.max_depth, self.pixel_samples_scale as f32);
 
-        // Set light params for importance sampling
+        // 设置光源参数用于重要性采样
         if let Some((corner, u, v, area_inv)) = light_info {
             bridge.set_light(&corner, &u, &v, area_inv);
         }
@@ -410,12 +410,12 @@ impl Camera {
             bridge.set_sphere(&center, radius);
         }
 
-        // Create pipeline
+        // 创建 OptiX 管线（分配输出缓冲、降噪引导缓冲）
         if !bridge.create_pipeline(w as i32, h as i32) {
             anyhow::bail!("Failed to create pipeline: {}", bridge.get_error());
         }
 
-        // Build camera params
+        // 构建 GPU 相机参数
         let cam = BridgeCameraParams {
             lookfrom: f64x3_to_f32x3(self.lookfrom),
             lookat: f64x3_to_f32x3(self.lookat),
@@ -446,8 +446,7 @@ impl Camera {
             anyhow::bail!("GPU render failed: {}", bridge.get_error());
         }
 
-        // Compute elapsed time immediately after GPU render,
-        // before any post-processing (denoise, PNG save).
+        // GPU 渲染结束后立即计算耗时，赶在降噪和 PNG 写入等后处理之前
         if let Some(start) = gpu_render_start {
             let elapsed = start.elapsed();
             let total_pixel_samples = (w * h * spp as usize) as f64;
@@ -461,7 +460,7 @@ impl Camera {
             );
         }
 
-        // Apply AI denoiser if requested
+        // 可选的 AI 降噪后处理
         if denoise {
             eprintln!("Applying AI denoiser (Tensor Core)...");
             if !bridge.denoise(&mut output) {
@@ -469,7 +468,7 @@ impl Camera {
             }
         }
 
-        // Convert float buffer to 16-bit PNG
+        // 将浮点缓冲转换为 16-bit PNG
         if !calibrate {
             save_png_gpu(output_path, w as u32, h as u32, &output)?;
             eprintln!("Wrote {}", output_path);
@@ -536,7 +535,7 @@ impl Camera {
         let counter = AtomicUsize::new(0);
         let render_start = if calibrate { Some(std::time::Instant::now()) } else { None };
 
-        // Golden ratio constant for deriving per-row seeds
+        // 黄金比例常数，用于推导每行的确定性种子
         const GOLDEN_RATIO_U64: u64 = 0x9e3779b97f4a7c15;
 
         let pixel_data: Vec<[u16; 3]> = (0..h)
@@ -565,7 +564,7 @@ impl Camera {
 
                 let done = counter.fetch_add(w, Ordering::Relaxed) + w;
                 if calibrate {
-                    // no per-row output during calibration
+                    // 校准模式下不输出每行进度
                 } else if json_progress {
                     let msg = json!({
                         "type": "progress",
@@ -584,7 +583,7 @@ impl Camera {
             bar.finish_with_message("Done.");
         }
 
-        // Compute elapsed time before any file I/O
+        // 在任何文件 I/O 之前计算耗时
         if let Some(start) = render_start {
             let elapsed = start.elapsed();
             let total_pixel_samples = (total_pixels * self.samples_per_pixel as usize) as f64;
@@ -691,7 +690,7 @@ fn save_png_gpu(path: &str, width: u32, height: u32, data: &[f32]) -> anyhow::Re
         }
         let x = idx as u32 % width;
         let y = idx as u32 / width;
-        // Match CPU pixel_to_10bit: sqrt gamma + 10-bit scaled to 16-bit
+        // 与 CPU pixel_to_10bit 一致：sqrt gamma + 10-bit 量化后缩放至 16-bit
         let r = linear_to_gamma(chunk[0] as f64);
         let g = linear_to_gamma(chunk[1] as f64);
         let b = linear_to_gamma(chunk[2] as f64);

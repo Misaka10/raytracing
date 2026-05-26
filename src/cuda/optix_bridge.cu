@@ -11,7 +11,7 @@
 #include <cmath>
 
 // ============================================================================
-// GPU-side launch params (must match shaders/common.h)
+// GPU 端启动参数（必须与 shaders/common.h 保持一致）
 // ============================================================================
 
 struct GpuFloat3 { float x, y, z; };
@@ -25,7 +25,7 @@ struct GpuCameraParams {
     GpuFloat3 defocus_disk_u, defocus_disk_v;
 };
 
-// Must match shaders/common.h GpuMaterialData (36 bytes, 4-byte aligned)
+// 必须与 shaders/common.h GpuMaterialData 一致（36 字节，4 字节对齐）
 struct GpuMaterial {
     unsigned int mat_type;
     GpuFloat3 albedo;
@@ -63,12 +63,12 @@ struct GpuLaunchParams {
     GpuFloat3*              guide_normal_buffer;
 };
 
-// Verify host-side struct sizes match GPU-side (common.h) expectations
+// 验证主机端结构体大小与 GPU 端 (common.h) 预期一致
 static_assert(sizeof(GpuMaterial) == 36, "GpuMaterial must be 36 bytes");
 static_assert(sizeof(GpuCameraParams) == 148, "GpuCameraParams must be 148 bytes");
 
 // ============================================================================
-// SBT record structures
+// SBT 记录结构体
 // ============================================================================
 
 struct SbtRecordHeader {
@@ -88,7 +88,7 @@ struct HitgroupSbtRecord {
 };
 
 // ============================================================================
-// OptiXBridge state
+// OptiXBridge 状态
 // ============================================================================
 
 struct OptiXBridge {
@@ -168,7 +168,7 @@ struct OptiXBridge {
 };
 
 // ============================================================================
-// Helpers
+// 辅助函数
 // ============================================================================
 
 static void setError(OptiXBridge* b, const char* fmt, ...) {
@@ -179,7 +179,7 @@ static void setError(OptiXBridge* b, const char* fmt, ...) {
     fprintf(stderr, "[OptiXBridge] ERROR: %s\n", b->errorMsg);
 }
 
-// Convert host camera params to GPU layout
+// 将主机端相机参数复制到 GPU 布局
 static void fillGpuCamera(const BridgeCameraParams* src, GpuCameraParams* dst) {
     memcpy(&dst->lookfrom, src->lookfrom, sizeof(float) * 3);
     memcpy(&dst->lookat, src->lookat, sizeof(float) * 3);
@@ -199,7 +199,7 @@ static void fillGpuCamera(const BridgeCameraParams* src, GpuCameraParams* dst) {
 }
 
 // ============================================================================
-// CUDA check macro
+// CUDA 检查宏
 // ============================================================================
 
 #define CUDA_CHECK(call) do { \
@@ -238,7 +238,7 @@ static void fillGpuCamera(const BridgeCameraParams* src, GpuCameraParams* dst) {
 } while(0)
 
 // ============================================================================
-// Public API Implementation
+// 公共 API 实现
 // ============================================================================
 
 OptiXBridge* optix_bridge_init(
@@ -279,7 +279,7 @@ OptiXBridge* optix_bridge_init(
     bridge->d_sbtMiss = 0;
     bridge->d_sbtHitgroup = 0;
 
-    // --- CUDA init ---
+    // --- CUDA 初始化 ---
     CUresult cuErr = cuInit(0);
     if (cuErr != CUDA_SUCCESS) {
         setError(bridge, "cuInit failed: %d. Is CUDA driver installed?", (int)cuErr);
@@ -298,40 +298,40 @@ OptiXBridge* optix_bridge_init(
     CUdevice cuDevice;
     CUDA_CHECK(cuDeviceGet(&cuDevice, 0));
 
-    // Store and print device name for diagnostics
+    // 存储并打印设备名称用于诊断
     CUDA_CHECK_FREE(cuDeviceGetName(bridge->deviceName, sizeof(bridge->deviceName), cuDevice));
     fprintf(stderr, "[OptiXBridge] Using CUDA device: %s\n", bridge->deviceName);
 
     CUDA_CHECK(cuCtxCreate(&bridge->cuCtx, NULL, 0, cuDevice));
     CUDA_CHECK(cuStreamCreate(&bridge->stream, CU_STREAM_DEFAULT));
 
-    // --- OptiX init ---
+    // --- OptiX 初始化 ---
     OPTIX_CHECK(optixInit());
 
-    // OptiX log callback for detailed diagnostics
+    // OptiX 日志回调，用于详细诊断
     static auto logCallback = [](unsigned int level, const char* tag, const char* msg, void*) {
         fprintf(stderr, "[OptiX][%u][%s] %s\n", level, tag, msg);
     };
 
     OptixDeviceContextOptions optixOpts = {};
     optixOpts.logCallbackFunction = logCallback;
-    optixOpts.logCallbackLevel = 4; // all messages including info
+    optixOpts.logCallbackLevel = 4; // 输出所有消息（包括 info）
 
     OPTIX_CHECK(optixDeviceContextCreate(bridge->cuCtx, &optixOpts, &bridge->optixCtx));
 
-    // --- Build pipeline ---
+    // --- 构建管线 ---
 
-    // Pipeline compile options
+    // 管线编译选项
     OptixPipelineCompileOptions pipelineCompileOpts = {};
     pipelineCompileOpts.usesMotionBlur = false;
     pipelineCompileOpts.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS
                                                | OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING;
-    pipelineCompileOpts.numPayloadValues = 8; // match our Payload struct register count
-    pipelineCompileOpts.numAttributeValues = 2; // barycentrics
+    pipelineCompileOpts.numPayloadValues = 8; // 匹配 Payload 结构体的寄存器数量
+    pipelineCompileOpts.numAttributeValues = 2; // 重心坐标
     pipelineCompileOpts.exceptionFlags = OPTIX_EXCEPTION_FLAG_NONE;
     pipelineCompileOpts.pipelineLaunchParamsVariableName = "launch_params";
 
-    // Create module from embedded PTX
+    // 从嵌入的 PTX 创建模块
     OptixModuleCompileOptions moduleCompileOpts = {};
     moduleCompileOpts.maxRegisterCount = OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT;
     moduleCompileOpts.optLevel = OPTIX_COMPILE_OPTIMIZATION_DEFAULT;
@@ -340,8 +340,8 @@ OptiXBridge* optix_bridge_init(
     char log[2048];
     size_t logSize = sizeof(log);
 
-    // Create 3 separate OptiX modules (one per PTX file) to avoid
-    // duplicate symbol definitions (each PTX is its own compilation unit).
+    // 创建 3 个独立的 OptiX 模块（每个 PTX 一个），避免
+    // 重复符号定义（每个 PTX 是独立的编译单元）。
     auto createModule = [&](const char* ptx, size_t ptxLen, const char* name,
                              OptixModule* outModule) -> bool {
         logSize = sizeof(log);
@@ -368,7 +368,7 @@ OptiXBridge* optix_bridge_init(
         return NULL;
     }
 
-    // Create program groups
+    // 创建着色器程序组
     {
         OptixProgramGroupOptions pgOpts = {};
 
@@ -408,7 +408,7 @@ OptiXBridge* optix_bridge_init(
         ));
     }
 
-    // Link pipeline
+    // 链接管线
     OptixProgramGroup pgList[] = {
         bridge->raygenPG,
         bridge->missPG,
@@ -430,15 +430,15 @@ OptiXBridge* optix_bridge_init(
         &bridge->pipeline
     ));
 
-    // Stack sizes: let OptiX use internal defaults (simpler + always correct)
-    // optixProgramGroupGetStackSize removed from OptiX 9.x function table
+    // 栈大小：使用 OptiX 内部默认值（更简单且始终正确）
+    // optixProgramGroupGetStackSize 已从 OptiX 9.x 函数表中移除
 
-    // Build SBT records
+    // 构建 SBT 记录
     OPTIX_CHECK(optixSbtRecordPackHeader(bridge->raygenPG, &bridge->sbtRaygen));
     OPTIX_CHECK(optixSbtRecordPackHeader(bridge->missPG, &bridge->sbtMiss));
     OPTIX_CHECK(optixSbtRecordPackHeader(bridge->hitgroupPG, &bridge->sbtHitgroup));
 
-    // Upload SBT records to device
+    // 将 SBT 记录上传到设备
     CUDA_CHECK(cuMemAlloc(&bridge->d_sbtRaygen, sizeof(RaygenSbtRecord)));
     CUDA_CHECK(cuMemAlloc(&bridge->d_sbtMiss, sizeof(MissSbtRecord)));
     CUDA_CHECK(cuMemAlloc(&bridge->d_sbtHitgroup, sizeof(HitgroupSbtRecord)));
@@ -501,13 +501,13 @@ bool optix_bridge_build_accel(
     const size_t indexSize  = (size_t)tri_count * 3 * sizeof(unsigned int);
     const size_t normalSize = (size_t)vertex_count * 3 * sizeof(float);
 
-    // Free old buffers on rebuild
+    // 重建时释放旧缓冲区
     if (bridge->d_vertexBuffer) { CUDA_CHECK_FREE(cuMemFree(bridge->d_vertexBuffer)); bridge->d_vertexBuffer = 0; }
     if (bridge->d_normalBuffer) { CUDA_CHECK_FREE(cuMemFree(bridge->d_normalBuffer)); bridge->d_normalBuffer = 0; }
     if (bridge->d_indexBuffer)  { CUDA_CHECK_FREE(cuMemFree(bridge->d_indexBuffer));  bridge->d_indexBuffer = 0; }
     if (bridge->d_gasBuffer)    { CUDA_CHECK_FREE(cuMemFree(bridge->d_gasBuffer));    bridge->d_gasBuffer = 0; }
 
-    // Upload vertex, normal, and index data
+    // 上传顶点、法线和索引数据
     CUDA_CHECK(cuMemAlloc(&bridge->d_vertexBuffer, vertexSize));
     CUDA_CHECK(cuMemAlloc(&bridge->d_normalBuffer, normalSize));
     CUDA_CHECK(cuMemAlloc(&bridge->d_indexBuffer, indexSize));
@@ -515,7 +515,7 @@ bool optix_bridge_build_accel(
     CUDA_CHECK(cuMemcpyHtoD(bridge->d_normalBuffer, normals, normalSize));
     CUDA_CHECK(cuMemcpyHtoD(bridge->d_indexBuffer, indices, indexSize));
 
-    // Build acceleration structure (RT Core hardware BVH)
+    // 构建加速结构（RT Core 硬件 BVH）
     OptixBuildInput buildInput = {};
     buildInput.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
     buildInput.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
@@ -540,19 +540,19 @@ bool optix_bridge_build_accel(
         bridge->optixCtx,
         &accelOpts,
         &buildInput,
-        1, // num inputs
+        1, // 输入数量
         &bufferSizes
     ));
 
-    // Temp buffer
+    // 临时缓冲区
     CUdeviceptr d_temp;
     CUDA_CHECK(cuMemAlloc(&d_temp, bufferSizes.tempSizeInBytes));
 
-    // Output buffer
+    // 输出缓冲区
     CUdeviceptr d_outputAccel;
     CUDA_CHECK(cuMemAlloc(&d_outputAccel, bufferSizes.outputSizeInBytes));
 
-    // Compacted size (uint64)
+    // 压缩后的结构大小 (uint64)
     CUdeviceptr d_compactedSize;
     CUDA_CHECK(cuMemAlloc(&d_compactedSize, sizeof(unsigned long long)));
 
@@ -577,7 +577,7 @@ bool optix_bridge_build_accel(
 
     CUDA_CHECK(cuStreamSynchronize(bridge->stream));
 
-    // Compact the acceleration structure
+    // 压缩加速结构
     unsigned long long compactedSize = 0;
     CUDA_CHECK(cuMemcpyDtoH(&compactedSize, d_compactedSize, sizeof(unsigned long long)));
 
@@ -593,7 +593,7 @@ bool optix_bridge_build_accel(
 
     CUDA_CHECK(cuStreamSynchronize(bridge->stream));
 
-    // Free temp buffers
+    // 释放临时缓冲区
     CUDA_CHECK_FREE(cuMemFree(d_temp));
     CUDA_CHECK_FREE(cuMemFree(d_outputAccel));
     CUDA_CHECK_FREE(cuMemFree(d_compactedSize));
@@ -616,19 +616,19 @@ bool optix_bridge_create_pipeline(
 
     const size_t outputSize = (size_t)width * (size_t)height * 3 * sizeof(float);
 
-    // Allocate output buffer
+    // 分配输出缓冲区
     if (bridge->d_output) cuMemFree(bridge->d_output);
     CUDA_CHECK(cuMemAlloc(&bridge->d_output, outputSize));
 
-    // Allocate launch params buffer
+    // 分配启动参数缓冲区
     if (bridge->d_launchParams) cuMemFree(bridge->d_launchParams);
     CUDA_CHECK(cuMemAlloc(&bridge->d_launchParams, sizeof(GpuLaunchParams)));
 
-    // Allocate denoiser guide buffers (albedo + world-space normal, per-pixel float3)
+    // 分配降噪器引导缓冲区（albedo + 世界空间法线，每像素 float3）
     if (bridge->d_albedoBuffer) cuMemFree(bridge->d_albedoBuffer);
     if (bridge->d_guideNormalBuffer) cuMemFree(bridge->d_guideNormalBuffer);
     CUDA_CHECK(cuMemAlloc(&bridge->d_albedoBuffer, outputSize));
-    // Rollback: free albedo buffer if normal buffer alloc fails
+    // 回滚：如果法线缓冲区分配失败，释放 albedo 缓冲区
     {
         CUresult r = cuMemAlloc(&bridge->d_guideNormalBuffer, outputSize);
         if (r != CUDA_SUCCESS) {
@@ -656,7 +656,7 @@ bool optix_bridge_render(
 {
     if (!bridge || !bridge->hasAccel || bridge->width == 0) return false;
 
-    // Prepare launch params
+    // 准备启动参数
     GpuLaunchParams params = {};
     params.width  = (unsigned int)bridge->width;
     params.height = (unsigned int)bridge->height;
@@ -685,7 +685,7 @@ bool optix_bridge_render(
 
     CUDA_CHECK(cuMemcpyHtoD(bridge->d_launchParams, &params, sizeof(GpuLaunchParams)));
 
-    // Setup SBT
+    // 设置 SBT
     OptixShaderBindingTable sbt = {};
     sbt.raygenRecord                = bridge->d_sbtRaygen;
     sbt.missRecordBase              = bridge->d_sbtMiss;
@@ -695,7 +695,7 @@ bool optix_bridge_render(
     sbt.hitgroupRecordStrideInBytes = sizeof(HitgroupSbtRecord);
     sbt.hitgroupRecordCount         = 1;
 
-    // Launch
+    // 发射光线
     OPTIX_CHECK(optixLaunch(
         bridge->pipeline,
         bridge->stream,
@@ -704,12 +704,12 @@ bool optix_bridge_render(
         &sbt,
         (unsigned int)bridge->width,
         (unsigned int)bridge->height,
-        1 // depth = 1 (only raygen launches rays)
+        1 // depth = 1（仅 raygen 发射光线）
     ));
 
     CUDA_CHECK(cuStreamSynchronize(bridge->stream));
 
-    // Download result
+    // 下载渲染结果到主机
     const size_t outputSize = (size_t)bridge->width * (size_t)bridge->height * 3 * sizeof(float);
     CUDA_CHECK(cuMemcpyDtoH(output, bridge->d_output, outputSize));
 
@@ -735,7 +735,7 @@ bool optix_bridge_set_tri_material(OptiXBridge* bridge, const unsigned int* tri_
 bool optix_bridge_set_materials(OptiXBridge* bridge, const void* materials, unsigned int count) {
     if (!bridge || !materials || count == 0) return false;
 
-    // Free old buffer if any
+    // 如果存在旧缓冲区则先释放
     if (bridge->d_materials) {
         CUDA_CHECK_FREE(cuMemFree(bridge->d_materials));
         bridge->d_materials = 0;
@@ -794,7 +794,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
     int width = bridge->width;
     int height = bridge->height;
 
-    // Resolution change: destroy old denoiser and recreate with correct size
+    // 分辨率变更：销毁旧降噪器并重新创建为正确尺寸
     if (bridge->denoiser && (bridge->denoiserWidth != width || bridge->denoiserHeight != height)) {
         fprintf(stderr, "[OptiXBridge] Resolution changed %dx%d -> %dx%d, recreating denoiser\n",
                 bridge->denoiserWidth, bridge->denoiserHeight, width, height);
@@ -807,7 +807,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
         bridge->denoiserScratchSize = 0;
     }
 
-    // One-time creation (HDR model + albedo/normal guide buffers)
+    // 一次性创建（HDR 模型 + albedo/normal 引导缓冲区）
     if (!bridge->denoiser) {
         OptixDenoiserOptions opts = {};
         opts.guideAlbedo = 1;
@@ -856,7 +856,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
 
     unsigned int rowStride = (unsigned int)((size_t)width * 3 * sizeof(float));
 
-    // Input color layer
+    // 输入颜色层
     OptixImage2D inputImage = {};
     inputImage.data = bridge->d_output;
     inputImage.width = (unsigned int)width;
@@ -865,7 +865,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
     inputImage.pixelStrideInBytes = 3 * sizeof(float);
     inputImage.format = OPTIX_PIXEL_FORMAT_FLOAT3;
 
-    // Output image
+    // 输出图像
     OptixImage2D outputImage = {};
     outputImage.data = bridge->d_denoisedOutput;
     outputImage.width = (unsigned int)width;
@@ -874,7 +874,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
     outputImage.pixelStrideInBytes = 3 * sizeof(float);
     outputImage.format = OPTIX_PIXEL_FORMAT_FLOAT3;
 
-    // Guide albedo (first-hit surface reflectance)
+    // 引导层 albedo（首次命中表面反射率）
     OptixImage2D albedoImage = {};
     albedoImage.data = bridge->d_albedoBuffer;
     albedoImage.width = (unsigned int)width;
@@ -883,7 +883,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
     albedoImage.pixelStrideInBytes = 3 * sizeof(float);
     albedoImage.format = OPTIX_PIXEL_FORMAT_FLOAT3;
 
-    // Guide normal (first-hit world-space normal)
+    // 引导层 normal（首次命中世界空间法线）
     OptixImage2D normalImage = {};
     normalImage.data = bridge->d_guideNormalBuffer;
     normalImage.width = (unsigned int)width;
@@ -901,7 +901,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
     inputLayer.output = outputImage;
 
     OptixDenoiserParams params = {};
-    // hdrIntensity defaults to 0.0 (auto-compute) — critical for HDR scenes
+    // hdrIntensity 默认为 0.0（自动计算）—— 对 HDR 场景至关重要
 
     OPTIX_CHECK(optixDenoiserInvoke(
         bridge->denoiser,
@@ -919,7 +919,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
 
     CUDA_CHECK(cuStreamSynchronize(bridge->stream));
 
-    // Copy denoised result back to d_output
+    // 将降噪结果复制回 d_output（设备端到设备端）
     size_t outputSize = (size_t)width * (size_t)height * 3 * sizeof(float);
     CUDA_CHECK(cuMemcpyDtoD(
         bridge->d_output,
@@ -927,7 +927,7 @@ bool optix_bridge_denoise(OptiXBridge* bridge, float* output) {
         outputSize
     ));
 
-    // Download to host so caller gets the denoised data
+    // 下载到主机端，调用者可获取降噪后的数据
     CUDA_CHECK(cuMemcpyDtoH(output, bridge->d_output, outputSize));
 
     fprintf(stderr, "[OptiXBridge] Denoised %dx%d image (Tensor Core HDR with guides)\n", width, height);
